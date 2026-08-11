@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Storefront collections
+    match /products/{productId} {
+      allow read, write: if true;
+    }
+
+    match /categories/{categoryId} {
+      allow read, write: if true;
+    }
+
+    match /heroSlides/{slideId} {
+      allow read, write: if true;
+    }
+
+    match /paymentSettings/{settingId} {
+      allow read, write: if true;
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      allow read, write: if true;
+    }
+
+    // Custom Inquiries
+    match /customInquiries/{inquiryId} {
+      allow read, write: if true;
+    }
+  }
+}

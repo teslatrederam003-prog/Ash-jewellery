@@ -1,0 +1,6 @@
+{
+  "name": "Ash Jewellery",
+  "description": "E-commerce storefront and admin panel for Ash Jewellery featuring handcrafted imitation and artificial jewellery.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
