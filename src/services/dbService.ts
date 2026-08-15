@@ -108,6 +108,8 @@ const LOCAL_ORDERS_KEY = 'ash_jewellery_local_orders';
 const LOCAL_INQUIRIES_KEY = 'ash_jewellery_local_inquiries';
 const LOCAL_PRODUCTS_KEY = 'ash_jewellery_local_products';
 const LOCAL_CATEGORIES_KEY = 'ash_jewellery_local_categories';
+const LOCAL_HERO_SLIDES_KEY = 'ash_jewellery_local_hero_slides';
+const LOCAL_PAYMENT_SETTINGS_KEY = 'ash_jewellery_local_payment_settings';
 
 const DELETED_PRODUCTS_KEY = 'ash_jewellery_deleted_products';
 const DELETED_CATEGORIES_KEY = 'ash_jewellery_deleted_categories';
@@ -176,6 +178,54 @@ function saveLocalCategories(categories: Category[]) {
   }
 }
 
+function getLocalHeroSlides(): HeroSlide[] | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_HERO_SLIDES_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLocalHeroSlides(slides: HeroSlide[]) {
+  try {
+    localStorage.setItem(LOCAL_HERO_SLIDES_KEY, JSON.stringify(slides));
+  } catch (e) {
+    console.error('Failed to save local hero slides:', e);
+  }
+}
+
+// Synchronous Instant Getters (0ms Load Time)
+export function getInstantInitialProducts(): Product[] {
+  const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
+  const localProds = getLocalProducts();
+  const base = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
+  return base.filter((p) => !deletedIds.has(p.id));
+}
+
+export function getInstantInitialCategories(): Category[] {
+  const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
+  const localCats = getLocalCategories();
+  const base = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
+  return base.filter((c) => !deletedIds.has(c.id));
+}
+
+export function getInstantInitialHeroSlides(): HeroSlide[] {
+  const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
+  const localSlides = getLocalHeroSlides();
+  const base = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
+  return base.filter((s) => !deletedIds.has(s.id)).sort((a, b) => a.order - b.order);
+}
+
+export function getInstantInitialPaymentSettings(): PaymentSettings {
+  try {
+    const raw = localStorage.getItem(LOCAL_PAYMENT_SETTINGS_KEY);
+    return raw ? JSON.parse(raw) : INITIAL_PAYMENT_SETTINGS;
+  } catch {
+    return INITIAL_PAYMENT_SETTINGS;
+  }
+}
+
 function getLocalOrders(): Order[] {
   try {
     const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
@@ -214,43 +264,54 @@ function saveLocalInquiry(inquiry: CustomInquiry) {
   }
 }
 
-// Seed Initial Data
+// Seed Initial Data (Non-blocking background sync)
 export async function seedDatabaseIfEmpty() {
   const seeded = localStorage.getItem('ash_jewellery_has_seeded');
   if (seeded) return;
 
   try {
-    const prodSnap = await getDocs(collection(db, 'products'));
+    const [prodSnap, catSnap, slideSnap, paymentSnap] = await Promise.all([
+      getDocs(collection(db, 'products')),
+      getDocs(collection(db, 'categories')),
+      getDocs(collection(db, 'heroSlides')),
+      getDoc(doc(db, 'paymentSettings', 'default')),
+    ]);
+
+    const seedPromises: Promise<any>[] = [];
+
     if (prodSnap.empty) {
       console.log('Seeding initial products into Firestore...');
       for (const prod of INITIAL_PRODUCTS) {
-        await setDoc(doc(db, 'products', prod.id), cleanFirestoreData(prod));
+        seedPromises.push(setDoc(doc(db, 'products', prod.id), cleanFirestoreData(prod)));
       }
     }
 
-    const catSnap = await getDocs(collection(db, 'categories'));
     if (catSnap.empty) {
       console.log('Seeding initial categories into Firestore...');
       for (const cat of INITIAL_CATEGORIES) {
-        await setDoc(doc(db, 'categories', cat.id), cleanFirestoreData(cat));
+        seedPromises.push(setDoc(doc(db, 'categories', cat.id), cleanFirestoreData(cat)));
       }
     }
 
-    const slideSnap = await getDocs(collection(db, 'heroSlides'));
     if (slideSnap.empty) {
       console.log('Seeding initial hero slides into Firestore...');
       for (const slide of INITIAL_HERO_SLIDES) {
-        await setDoc(doc(db, 'heroSlides', slide.id), cleanFirestoreData(slide));
+        seedPromises.push(setDoc(doc(db, 'heroSlides', slide.id), cleanFirestoreData(slide)));
       }
     }
 
-    const paymentSnap = await getDoc(doc(db, 'paymentSettings', 'default'));
     if (!paymentSnap.exists()) {
       console.log('Seeding initial payment settings into Firestore...');
-      await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
-        ...INITIAL_PAYMENT_SETTINGS,
-        updatedAt: Date.now(),
-      }));
+      seedPromises.push(
+        setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
+          ...INITIAL_PAYMENT_SETTINGS,
+          updatedAt: Date.now(),
+        }))
+      );
+    }
+
+    if (seedPromises.length > 0) {
+      await Promise.all(seedPromises);
     }
     localStorage.setItem('ash_jewellery_has_seeded', 'true');
   } catch (error) {
@@ -397,25 +458,6 @@ export async function removeCategory(id: string): Promise<void> {
 }
 
 // Hero Slides
-const LOCAL_HERO_SLIDES_KEY = 'ash_jewellery_local_hero_slides';
-
-function getLocalHeroSlides(): HeroSlide[] | null {
-  try {
-    const raw = localStorage.getItem(LOCAL_HERO_SLIDES_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveLocalHeroSlides(slides: HeroSlide[]) {
-  try {
-    localStorage.setItem(LOCAL_HERO_SLIDES_KEY, JSON.stringify(slides));
-  } catch (e) {
-    console.error('Failed to save local hero slides:', e);
-  }
-}
-
 export async function fetchHeroSlides(): Promise<HeroSlide[]> {
   const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
   const localSlides = getLocalHeroSlides();
@@ -637,17 +679,24 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
   try {
     const docSnap = await getDoc(doc(db, 'paymentSettings', 'default'));
     if (docSnap.exists()) {
-      return docSnap.data() as PaymentSettings;
+      const data = docSnap.data() as PaymentSettings;
+      try {
+        localStorage.setItem(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
+      } catch (e) {
+        console.warn('Failed to cache payment settings:', e);
+      }
+      return data;
     }
-    return INITIAL_PAYMENT_SETTINGS;
+    return getInstantInitialPaymentSettings();
   } catch (error) {
-    console.warn('Error fetching payment settings, using initial:', error);
-    return INITIAL_PAYMENT_SETTINGS;
+    console.warn('Error fetching payment settings, using local or initial:', error);
+    return getInstantInitialPaymentSettings();
   }
 }
 
 export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
   try {
+    localStorage.setItem(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
     await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
       ...settings,
       updatedAt: Date.now(),

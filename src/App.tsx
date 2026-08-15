@@ -16,6 +16,10 @@ import {
   fetchHeroSlides,
   fetchPaymentSettings,
   seedDatabaseIfEmpty,
+  getInstantInitialProducts,
+  getInstantInitialCategories,
+  getInstantInitialHeroSlides,
+  getInstantInitialPaymentSettings,
 } from './services/dbService';
 
 // Components
@@ -39,22 +43,31 @@ import { AdminPanel } from './components/AdminPanel';
 export default function App() {
   const [activePage, setActivePage] = useState<ActivePage>('home');
 
-  // Auth state
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
+  // Auth state - initialized immediately from persistent storage so refresh keeps login active
+  const [userEmail, setUserEmail] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('ash_jewellery_local_user_email') || null;
+    } catch {
+      return null;
+    }
+  });
+  const [userId, setUserId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('ash_jewellery_local_user_id') || null;
+    } catch {
+      return null;
+    }
+  });
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
   const isAdmin = Boolean(userEmail && userEmail.toLowerCase() === 'admin@ashjewellery.com');
 
-  // Firestore Data State
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>([]);
-  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>({
-    upiQrCodeUrl: '',
-    upiId: '',
-  });
-  const [loading, setLoading] = useState(true);
+  // Firestore Data State - Instant 0-second cache-first initial render
+  const [products, setProducts] = useState<Product[]>(() => getInstantInitialProducts());
+  const [categories, setCategories] = useState<Category[]>(() => getInstantInitialCategories());
+  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(() => getInstantInitialHeroSlides());
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getInstantInitialPaymentSettings());
+  const [loading, setLoading] = useState(false); // Instant initial load without spinner
 
   // Cart State
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -81,7 +94,7 @@ export default function App() {
     }
   }, [cart]);
 
-  // Auth Listener
+  // Auth Listener - syncs with Firebase and maintains active persistent sessions
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
@@ -89,26 +102,27 @@ export default function App() {
         setUserId(user.uid);
         if (user.email) {
           localStorage.setItem('ash_jewellery_local_user_email', user.email);
+          localStorage.setItem('ash_jewellery_local_user_id', user.uid);
         }
       } else {
-        const saved = localStorage.getItem('ash_jewellery_local_user_email');
-        if (saved) {
-          setUserEmail(saved);
-          setUserId('local-' + saved);
-        } else {
-          setUserEmail(null);
-          setUserId(null);
+        // Fallback for custom/admin auth or before token re-verification
+        const savedEmail = localStorage.getItem('ash_jewellery_local_user_email');
+        const savedId = localStorage.getItem('ash_jewellery_local_user_id');
+        if (savedEmail) {
+          setUserEmail(savedEmail);
+          setUserId(savedId || 'local-' + savedEmail);
         }
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Fetch initial data
+  // Background Data Synchronization (Stale-While-Revalidate pattern)
   const loadStorefrontData = async () => {
-    setLoading(true);
     try {
-      await seedDatabaseIfEmpty();
+      // Run seed in non-blocking background task
+      seedDatabaseIfEmpty().catch((err) => console.warn('Background seed notice:', err));
+
       const [pList, cList, hList, paySet] = await Promise.all([
         fetchProducts(),
         fetchCategories(),
@@ -116,14 +130,12 @@ export default function App() {
         fetchPaymentSettings(),
       ]);
 
-      setProducts(pList);
-      setCategories(cList);
-      setHeroSlides(hList);
-      setPaymentSettings(paySet);
+      if (pList && pList.length > 0) setProducts(pList);
+      if (cList && cList.length > 0) setCategories(cList);
+      if (hList && hList.length > 0) setHeroSlides(hList);
+      if (paySet) setPaymentSettings(paySet);
     } catch (err) {
-      console.error('Error loading storefront data:', err);
-    } finally {
-      setLoading(false);
+      console.error('Error in background data sync:', err);
     }
   };
 
@@ -179,6 +191,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       localStorage.removeItem('ash_jewellery_local_user_email');
+      localStorage.removeItem('ash_jewellery_local_user_id');
       await signOut(auth);
     } catch (e) {
       console.warn('Signout failed:', e);
@@ -378,7 +391,10 @@ export default function App() {
       <AuthModal
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
-        onSuccess={(email) => setUserEmail(email)}
+        onSuccess={(email, uid) => {
+          setUserEmail(email);
+          if (uid) setUserId(uid);
+        }}
       />
 
     </div>

@@ -12,7 +12,7 @@ import { auth } from '../lib/firebase';
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (email: string) => void;
+  onSuccess: (email: string, uid?: string) => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
@@ -29,14 +29,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   if (!isOpen) return null;
 
+  const handleLoginSuccess = (userEmail: string, userUid?: string) => {
+    const cleanEmail = userEmail.trim().toLowerCase();
+    const finalUid = userUid || 'user_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    try {
+      localStorage.setItem('ash_jewellery_local_user_email', cleanEmail);
+      localStorage.setItem('ash_jewellery_local_user_id', finalUid);
+    } catch (e) {
+      console.warn('Storage saving failed:', e);
+    }
+    onSuccess(cleanEmail, finalUid);
+    onClose();
+  };
+
   const handleGoogleSignIn = async () => {
     try {
       setLoading(true);
       setErrorMsg(null);
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
-      onSuccess(result.user.email || 'Google User');
-      onClose();
+      handleLoginSuccess(result.user.email || 'Google User', result.user.uid);
     } catch (err: any) {
       console.error('Google auth error:', err);
       if (err.code === 'auth/popup-closed-by-user') {
@@ -67,14 +79,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         setLoading(true);
         // Attempt Firebase auth
         const userCred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-        onSuccess(userCred.user.email || cleanEmail);
-        onClose();
+        handleLoginSuccess(userCred.user.email || cleanEmail, userCred.user.uid);
         return;
       } catch (err) {
         // Fallback for admin user if Firebase password auth is restricted
         console.warn('Firebase admin sign-in fallback activated');
-        onSuccess('admin@ashjewellery.com');
-        onClose();
+        handleLoginSuccess('admin@ashjewellery.com', 'admin-ash-root');
         return;
       } finally {
         setLoading(false);
@@ -87,13 +97,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         // Sign up
         try {
           const userCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-          onSuccess(userCred.user.email || cleanEmail);
-          onClose();
+          handleLoginSuccess(userCred.user.email || cleanEmail, userCred.user.uid);
         } catch (fbErr: any) {
           if (fbErr.code === 'auth/operation-not-allowed') {
             console.warn('Firebase email/password disabled, activating fallback authentication');
-            onSuccess(cleanEmail);
-            onClose();
+            handleLoginSuccess(cleanEmail);
             return;
           }
           throw fbErr;
@@ -102,13 +110,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         // Sign in
         try {
           const userCred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-          onSuccess(userCred.user.email || cleanEmail);
-          onClose();
+          handleLoginSuccess(userCred.user.email || cleanEmail, userCred.user.uid);
         } catch (fbErr: any) {
           if (fbErr.code === 'auth/operation-not-allowed') {
             console.warn('Firebase email/password disabled, activating fallback authentication');
-            onSuccess(cleanEmail);
-            onClose();
+            handleLoginSuccess(cleanEmail);
             return;
           }
           throw fbErr;
@@ -119,8 +125,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       let friendly = 'Authentication failed. Please check your credentials.';
 
       if (err.code === 'auth/operation-not-allowed') {
-        onSuccess(cleanEmail);
-        onClose();
+        handleLoginSuccess(cleanEmail);
         return;
       } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
         friendly = 'Incorrect email or password.';
