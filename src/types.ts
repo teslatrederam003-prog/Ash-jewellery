@@ -74,6 +74,8 @@ export interface CustomInquiry {
   occasion: string;
   budget: string;
   details: string;
+  referenceImageUrl?: string;
+  referenceImages?: string[];
   status: InquiryStatus;
   createdAt: number;
 }

@@ -99,8 +99,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingSlide, setEditingSlide] = useState<Partial<HeroSlide> | null>(null);
   const [uploadingSlideImage, setUploadingSlideImage] = useState(false);
 
-  // 4. Order Payment Screenshot Preview Modal
+  // 4. Order Payment Screenshot / Reference Image Preview Modal
   const [previewScreenshotUrl, setPreviewScreenshotUrl] = useState<string | null>(null);
+  const [previewModalTitle, setPreviewModalTitle] = useState<string>('Uploaded Payment Screenshot');
 
   // Filter for products/orders
   const [prodSearch, setProdSearch] = useState('');
@@ -905,7 +906,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             {order.paymentScreenshotUrl ? (
                               <div className="space-y-2 pt-2 border-t border-[#EFE1C8]">
                                 <button
-                                  onClick={() => setPreviewScreenshotUrl(order.paymentScreenshotUrl || null)}
+                                  onClick={() => {
+                                    setPreviewModalTitle(`Payment Screenshot for Order #${order.id.slice(-6)}`);
+                                    setPreviewScreenshotUrl(order.paymentScreenshotUrl || null);
+                                  }}
                                   className="w-full py-1.5 rounded-sm bg-white border border-[#D4A017] text-[#9B1C2F] text-[11px] font-bold uppercase tracking-wider cursor-pointer hover:bg-[#FBEFCB] flex items-center justify-center gap-1"
                                 >
                                   <Eye className="w-3.5 h-3.5" />
@@ -973,6 +977,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <p className="text-[#7A6A5C] font-medium bg-[#FFF8EC] p-2 rounded-sm border border-[#EFE1C8] mt-1">
                           "{inq.details}"
                         </p>
+
+                        {/* Customer Reference Photos Section */}
+                        {((inq.referenceImages && inq.referenceImages.length > 0) || inq.referenceImageUrl) ? (
+                          <div className="pt-2 border-t border-[#EFE1C8] space-y-1.5">
+                            <p className="text-[11px] font-bold text-[#2A1810] flex items-center gap-1">
+                              <ImageIcon className="w-3.5 h-3.5 text-[#D4A017]" />
+                              <span>Reference Photos Attached:</span>
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {(inq.referenceImages && inq.referenceImages.length > 0
+                                ? inq.referenceImages
+                                : [inq.referenceImageUrl!]
+                              ).map((refImg, rIdx) => (
+                                <div
+                                  key={rIdx}
+                                  onClick={() => {
+                                    setPreviewModalTitle(`Reference Photo #${rIdx + 1} from ${inq.name}`);
+                                    setPreviewScreenshotUrl(refImg);
+                                  }}
+                                  className="relative group w-14 h-14 rounded-sm border-2 border-[#D4A017] overflow-hidden bg-[#FFF8EC] cursor-pointer shadow-2xs hover:opacity-90 transition-opacity"
+                                  title="Click to view fullsize"
+                                >
+                                  <img
+                                    src={refImg}
+                                    alt={`Reference ${rIdx + 1}`}
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <div className="absolute inset-0 bg-[#2A1810]/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                    <Eye className="w-3.5 h-3.5 text-white" />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-[10px] text-[#7A6A5C] italic pt-1">No reference photos attached</p>
+                        )}
                       </div>
 
                       <a
@@ -1376,22 +1417,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* --- MODAL 4: PAYMENT SCREENSHOT FULLSIZE MODAL --- */}
+      {/* --- MODAL 4: FULLSIZE IMAGE PREVIEW MODAL --- */}
       {previewScreenshotUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2A1810]/80 backdrop-blur-xs">
-          <div className="relative max-w-2xl bg-white rounded-sm p-4 overflow-hidden border-2 border-[#D4A017]">
+          <div className="relative max-w-2xl w-full bg-white rounded-sm p-4 overflow-hidden border-2 border-[#D4A017] shadow-2xl">
             <button
               onClick={() => setPreviewScreenshotUrl(null)}
-              className="absolute top-4 right-4 p-2 rounded-sm bg-white border border-[#EFE1C8] text-[#2A1810] font-bold shadow-md cursor-pointer"
+              className="absolute top-4 right-4 p-2 rounded-sm bg-white border border-[#EFE1C8] text-[#2A1810] font-bold shadow-md cursor-pointer hover:text-[#9B1C2F]"
             >
               <X className="w-5 h-5" />
             </button>
-            <p className="text-xs font-bold text-[#2A1810] mb-2 px-2 uppercase tracking-wider">Uploaded Payment Screenshot:</p>
-            <img
-              src={previewScreenshotUrl}
-              alt="Payment Screenshot"
-              className="max-h-[80vh] w-auto object-contain rounded-sm mx-auto"
-            />
+            <p className="text-xs font-bold text-[#2A1810] mb-2 px-2 uppercase tracking-wider">{previewModalTitle}:</p>
+            <div className="bg-[#FFF8EC] p-2 rounded-sm border border-[#EFE1C8]">
+              <img
+                src={previewScreenshotUrl}
+                alt={previewModalTitle}
+                className="max-h-[80vh] w-auto object-contain rounded-sm mx-auto"
+              />
+            </div>
           </div>
         </div>
       )}

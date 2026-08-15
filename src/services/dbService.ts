@@ -575,8 +575,15 @@ export async function updatePaymentVerification(orderId: string, status: Payment
 // Custom Inquiries
 export async function createCustomInquiry(inquiryData: Omit<CustomInquiry, 'id' | 'createdAt' | 'status'>): Promise<CustomInquiry> {
   const newDocRef = doc(collection(db, 'customInquiries'));
+  const firstImage = inquiryData.referenceImageUrl || (inquiryData.referenceImages && inquiryData.referenceImages[0]) || '';
+  const imagesList = inquiryData.referenceImages && inquiryData.referenceImages.length > 0
+    ? inquiryData.referenceImages
+    : (firstImage ? [firstImage] : []);
+
   const newInquiry: CustomInquiry = {
     ...inquiryData,
+    referenceImageUrl: firstImage,
+    referenceImages: imagesList,
     id: newDocRef.id,
     status: 'New',
     createdAt: Date.now(),
