@@ -21,7 +21,7 @@ export const OrderConfirmationModal: React.FC<OrderConfirmationModalProps> = ({
     )} (${order.paymentMethod}). Please confirm my order details!`
   );
 
-  const whatsappUrl = `https://wa.me/919876543210?text=${whatsappMessage}`;
+  const whatsappUrl = `https://wa.me/918208810579?text=${whatsappMessage}`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2A1810]/80 backdrop-blur-xs overflow-y-auto">

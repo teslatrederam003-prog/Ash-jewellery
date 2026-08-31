@@ -180,7 +180,7 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                   <input
                     type="tel"
                     required
-                    placeholder="e.g. +91 9876543210"
+                    placeholder="e.g. +91 82088 10579"
                     value={customerPhone}
                     onChange={(e) => setCustomerPhone(e.target.value)}
                     className="w-full px-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"

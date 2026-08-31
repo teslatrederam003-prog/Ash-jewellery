@@ -30,6 +30,7 @@ import {
   InquiryStatus,
   ActivePage,
 } from '../types';
+import { ASH_LOGO_URL } from '../assets/logo';
 import {
   fetchProducts,
   saveProduct,
@@ -425,16 +426,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
         {/* Admin Header */}
         <div className="bg-white border-2 border-[#D4A017] rounded-sm p-6 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="bg-[#9B1C2F] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-sm uppercase tracking-wider border border-[#D4A017]">
-                ADMIN CONTROL PANEL
-              </span>
-              <span className="text-xs font-semibold text-[#7A6A5C]">{userEmail}</span>
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={() => {
+                setActivePage('home');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="cursor-pointer group bg-transparent border-0 p-0 focus:outline-none focus:ring-2 focus:ring-[#D4A017] rounded-xs"
+              title="Return to Storefront Home"
+              aria-label="Return to Storefront Home"
+            >
+              <img
+                src={ASH_LOGO_URL}
+                alt="Ash Imitation Jewellery"
+                className="h-14 sm:h-16 w-auto object-contain shrink-0 transition-transform duration-200 group-hover:scale-105"
+              />
+            </button>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="bg-[#9B1C2F] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-sm uppercase tracking-wider border border-[#D4A017]">
+                  ADMIN CONTROL PANEL
+                </span>
+                <span className="text-xs font-semibold text-[#7A6A5C]">{userEmail}</span>
+              </div>
+              <h1 className="font-serif text-2xl sm:text-3xl font-bold text-[#2A1810] mt-1">
+                Ash Jewellery Management
+              </h1>
             </div>
-            <h1 className="font-serif text-2xl sm:text-3xl font-bold text-[#2A1810] mt-1">
-              Ash Jewellery Management
-            </h1>
           </div>
 
           <button

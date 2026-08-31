@@ -107,7 +107,7 @@ export const CustomOrderPage: React.FC = () => {
         : ''
     }`
   );
-  const whatsappUrl = `https://wa.me/919876543210?text=${whatsappMessage}`;
+  const whatsappUrl = `https://wa.me/918208810579?text=${whatsappMessage}`;
 
   return (
     <div className="py-12 bg-[#FFF8EC] min-h-screen">
@@ -219,7 +219,7 @@ export const CustomOrderPage: React.FC = () => {
                   <input
                     type="tel"
                     required
-                    placeholder="e.g. +91 9876543210"
+                    placeholder="e.g. +91 82088 10579"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     className="w-full px-3.5 py-2.5 min-h-[44px] rounded-xl border border-[#EFE1C8] bg-[#FFF8EC] focus:outline-hidden focus:border-[#D4A017] text-[#2A1810]"

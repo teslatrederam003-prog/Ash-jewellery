@@ -282,17 +282,20 @@ export default function App() {
             <section className="py-12 bg-gradient-to-r from-[#2A1810] via-[#9B1C2F] to-[#2A1810] text-[#FFF8EC] border-y-2 border-[#D4A017]">
               <div className="max-w-4xl mx-auto px-4 text-center space-y-4">
                 <h3 className="font-serif text-2xl sm:text-4xl font-bold text-[#FBEFCB]">
-                  Affordable Royal Grandeur
+                  From One Dream to Another — Crafted with Love
                 </h3>
                 <p className="text-xs sm:text-sm text-[#EFE1C8] leading-relaxed max-w-2xl mx-auto">
-                  At Ash Jewellery, we handcraft Kundan, Chandbali, Temple and Crystal jewellery sets using micro-gold plating and anti-tarnish protective coatings. Experience pure royal grace.
+                  A husband-and-wife team creating meaningful jewellery with our own hands and whole heart. Customized with love, crafted with care, and made for your moments.
                 </p>
                 <div className="pt-2">
                   <button
-                    onClick={() => setActivePage('about')}
+                    onClick={() => {
+                      setActivePage('about');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
                     className="px-6 py-2.5 rounded-full bg-[#D4A017] hover:bg-[#F0C75E] text-[#2A1810] font-bold text-xs shadow-md transition-colors cursor-pointer"
                   >
-                    Our Brand Story
+                    Read Our Full Story
                   </button>
                 </div>
               </div>

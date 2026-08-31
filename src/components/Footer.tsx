@@ -1,6 +1,7 @@
 import React from 'react';
-import { Phone, Mail, MapPin, Clock, MessageCircle, Heart, ShieldCheck } from 'lucide-react';
+import { Phone, MapPin, MessageCircle, Heart, ShieldCheck } from 'lucide-react';
 import { ActivePage } from '../types';
+import { ASH_LOGO_URL } from '../assets/logo';
 
 interface FooterProps {
   setActivePage: (page: ActivePage) => void;
@@ -14,12 +15,28 @@ export const Footer: React.FC<FooterProps> = ({ setActivePage }) => {
           
           {/* Brand & Story */}
           <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-full bg-[#9B1C2F] border-2 border-[#D4A017] flex items-center justify-center font-serif text-[#D4A017] font-bold text-base">
-                A
+            <button
+              type="button"
+              onClick={() => {
+                setActivePage('home');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="flex items-center gap-3 text-left cursor-pointer group bg-transparent border-0 p-0 focus:outline-none focus:ring-2 focus:ring-[#D4A017] rounded-xs"
+              title="Return to Home"
+              aria-label="Return to Home"
+            >
+              <img
+                src={ASH_LOGO_URL}
+                alt="Ash Imitation Jewellery"
+                className="h-16 w-auto object-contain filter drop-shadow-sm transition-transform duration-200 group-hover:scale-105"
+              />
+              <div>
+                <h3 className="font-serif text-lg font-bold text-[#D4A017] uppercase tracking-wider group-hover:text-[#FBEFCB] transition-colors">
+                  Ash Jewellery
+                </h3>
+                <p className="text-[9px] text-[#FBEFCB]/70 uppercase tracking-widest font-bold">Imitation Jewellery</p>
               </div>
-              <h3 className="font-serif text-xl font-bold text-[#D4A017] uppercase tracking-wider">Ash Jewellery</h3>
-            </div>
+            </button>
             <p className="text-xs text-[#FBEFCB]/80 leading-relaxed font-sans">
               Exquisite handcrafted imitation & artificial jewellery designed in-house. Experience the grandeur of royal Kundan, Temple, and Antique sets at accessible prices.
             </p>
@@ -118,28 +135,32 @@ export const Footer: React.FC<FooterProps> = ({ setActivePage }) => {
           {/* Contact Strip */}
           <div className="space-y-3">
             <h4 className="font-serif text-sm font-bold text-[#D4A017] uppercase tracking-wider border-b border-[#D4A017]/30 pb-1">Reach Us</h4>
-            <ul className="space-y-2.5 text-xs text-[#FBEFCB]/80">
+            <ul className="space-y-3 text-xs text-[#FBEFCB]/80">
               <li className="flex items-start gap-2">
                 <MapPin className="w-4 h-4 text-[#D4A017] shrink-0 mt-0.5" />
-                <span>102 Jewellery Plaza, Near Central Market, New Delhi - 110001</span>
+                <div>
+                  <p className="leading-snug">Ash Jewellery, Near Gandhi Camp, Ichalkaranji, Kolhapur, Maharashtra - 416115</p>
+                  <a
+                    href="https://www.google.com/maps/place/16.710121,74.453112/data=!4m6!3m5!1s0!7e2!8m2!3d16.710121!4d74.45311199999999!18m1!1e1?entry=gps&coh=192189&g_ep=CAESBzI2LjI5LjIYACDl7Q0qnwEsOTQyNjc3MjcsOTQyOTIxOTUsOTQyOTk1MzIsMTAwNzk2NDk4LDEwMDc5Nzc2MSwxMDA3OTY1MzUsOTQyODA1NzYsOTQyMDczOTQsOTQyMDc1MDYsOTQyMDg1MDYsOTQyMTg2NTMsOTQyMjk4MzksOTQyNzUxNjgsOTQyNzk2MTksMTAwODE1NjM1LDEwMDgyMDIzNywxMDA4MjI0OTRCAklO&skid=d3660f4e-dbe6-4acb-9268-b7ff6674f7fc"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-[#D4A017] hover:underline font-semibold mt-0.5 inline-block"
+                  >
+                    Open in Google Maps →
+                  </a>
+                </div>
               </li>
               <li className="flex items-center gap-2">
                 <Phone className="w-4 h-4 text-[#D4A017] shrink-0" />
-                <span>+91 98765 43210</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <Mail className="w-4 h-4 text-[#D4A017] shrink-0" />
-                <span>support@ashjewellery.com</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-[#D4A017] shrink-0" />
-                <span>Mon - Sat: 10:00 AM - 8:00 PM</span>
+                <a href="tel:+918208810579" className="hover:text-[#D4A017] font-semibold">
+                  +91 82088 10579
+                </a>
               </li>
             </ul>
 
             {/* Direct WhatsApp Action Button */}
             <a
-              href="https://wa.me/919876543210?text=Hi%20Ash%20Jewellery,%20I%20have%20an%20inquiry%20regarding%20your%20jewellery%20collection."
+              href="https://wa.me/918208810579?text=Hi%20Ash%20Jewellery,%20I%20have%20an%20inquiry%20regarding%20your%20jewellery%20collection."
               target="_blank"
               rel="noopener noreferrer"
               className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold uppercase tracking-wider border-b-2 border-emerald-500 shadow-2xs transition-colors cursor-pointer"

@@ -152,7 +152,7 @@ export const MyOrdersPage: React.FC<MyOrdersPageProps> = ({ userEmail, setActive
                     </span>
 
                     <a
-                      href={`https://wa.me/919876543210?text=Hi%20Ash%20Jewellery,%20checking%20status%20for%20Order%20%23${order.id.slice(
+                      href={`https://wa.me/918208810579?text=Hi%20Ash%20Jewellery,%20checking%20status%20for%20Order%20%23${order.id.slice(
                         0,
                         8
                       )}`}

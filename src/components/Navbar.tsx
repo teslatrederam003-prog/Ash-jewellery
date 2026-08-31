@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ShoppingBag, User, Menu, X, Sparkles, Search, ShieldCheck } from 'lucide-react';
 import { ActivePage } from '../types';
+import { ASH_LOGO_URL } from '../assets/logo';
 
 interface NavbarProps {
   activePage: ActivePage;
@@ -54,19 +55,22 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center justify-between h-20">
           
           {/* Logo */}
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => handleNavClick('home')}>
-            <div className="w-10 h-10 bg-[#9B1C2F] rounded-full flex items-center justify-center border-2 border-[#D4A017] shadow-sm shrink-0">
-              <span className="text-[#D4A017] font-serif font-bold text-xl">A</span>
-            </div>
-            <div>
-              <h1 className="text-xl sm:text-2xl font-serif font-bold tracking-tight text-[#2A1810]">
-                ASH <span className="text-[#D4A017]">JEWELLERY</span>
-              </h1>
-              <p className="text-[9px] tracking-widest text-[#7A6A5C] uppercase font-bold -mt-0.5">
-                Premium Artificial Collections
-              </p>
-            </div>
-          </div>
+          <button
+            type="button"
+            className="flex items-center cursor-pointer group py-1 bg-transparent border-0 p-0 focus:outline-none focus:ring-2 focus:ring-[#D4A017] rounded-xs"
+            onClick={() => {
+              handleNavClick('home');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            title="Ash Imitation Jewellery - Return to Home"
+            aria-label="Ash Imitation Jewellery - Return to Home"
+          >
+            <img
+              src={ASH_LOGO_URL}
+              alt="Ash Imitation Jewellery Logo"
+              className="h-16 sm:h-18 w-auto max-h-18 object-contain transition-transform duration-200 group-hover:scale-105"
+            />
+          </button>
 
           {/* Desktop Navigation Links */}
           <nav className="hidden md:flex items-center space-x-8">
