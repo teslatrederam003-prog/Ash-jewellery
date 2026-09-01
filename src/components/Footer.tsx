@@ -139,7 +139,7 @@ export const Footer: React.FC<FooterProps> = ({ setActivePage }) => {
               <li className="flex items-start gap-2">
                 <MapPin className="w-4 h-4 text-[#D4A017] shrink-0 mt-0.5" />
                 <div>
-                  <p className="leading-snug">Ash Jewellery, Near Gandhi Camp, Ichalkaranji, Kolhapur, Maharashtra - 416115</p>
+                  <p className="leading-snug">Ash Jewellery, Ganeshnagar Line No. 4, Near Maruti Mandir, Bajiprabhu Path Sastha Jawal, Ichalkaranji, Tal- Hatkangale, Dist- Kolhapur - 416115</p>
                   <a
                     href="https://www.google.com/maps/place/16.710121,74.453112/data=!4m6!3m5!1s0!7e2!8m2!3d16.710121!4d74.45311199999999!18m1!1e1?entry=gps&coh=192189&g_ep=CAESBzI2LjI5LjIYACDl7Q0qnwEsOTQyNjc3MjcsOTQyOTIxOTUsOTQyOTk1MzIsMTAwNzk2NDk4LDEwMDc5Nzc2MSwxMDA3OTY1MzUsOTQyODA1NzYsOTQyMDczOTQsOTQyMDc1MDYsOTQyMDg1MDYsOTQyMTg2NTMsOTQyMjk4MzksOTQyNzUxNjgsOTQyNzk2MTksMTAwODE1NjM1LDEwMDgyMDIzNywxMDA4MjI0OTRCAklO&skid=d3660f4e-dbe6-4acb-9268-b7ff6674f7fc"
                     target="_blank"

@@ -56,7 +56,7 @@ export const ContactUsPage: React.FC = () => {
                   <div className="space-y-1.5 flex-1">
                     <h3 className="font-bold uppercase tracking-wider text-[#9B1C2F]">Workshop & Boutique Address</h3>
                     <p className="text-[#2A1810] leading-relaxed font-semibold">
-                      Ash Jewellery, Near Gandhi Camp, Ichalkaranji, Kolhapur District, Maharashtra - 416115, India
+                      Ash Jewellery, Ganeshnagar Line No. 4, Near Maruti Mandir, Bajiprabhu Path Sastha Jawal, Ichalkaranji, Tal- Hatkangale, Dist- Kolhapur, Pin Code - 416115
                     </p>
                     <a
                       href={googleMapsUrl}
