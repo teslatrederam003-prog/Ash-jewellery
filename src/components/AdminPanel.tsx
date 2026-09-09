@@ -220,7 +220,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const saved = await saveProduct({
         ...editingProduct,
         name: editingProduct.name,
-        category: editingProduct.category || 'Necklaces',
+        category: editingProduct.category || categories[0]?.name || 'Necklaces',
         price: Number(editingProduct.price),
         mrp: Number(editingProduct.mrp || editingProduct.price),
         occasion: editingProduct.occasion || 'Festive',
@@ -254,14 +254,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // --- CATEGORY ACTIONS ---
   const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!catName || !catImage) return;
+    if (!catName.trim()) {
+      showToast('Please enter a category name', 'error');
+      return;
+    }
 
     try {
-      await saveCategory({ name: catName, image: catImage });
-      showToast(`Category "${catName}" added!`);
+      const finalImage = catImage || 'https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?auto=format&fit=crop&q=80&w=800';
+      const saved = await saveCategory({ name: catName.trim(), image: finalImage });
+      showToast(`Category "${saved.name}" added successfully!`);
       setCategoryModalOpen(false);
       setCatName('');
       setCatImage('');
+
+      // Immediately reflect in local state
+      setCategories((prev) => {
+        const filtered = prev.filter((c) => c.id !== saved.id && c.name.toLowerCase() !== saved.name.toLowerCase());
+        return [...filtered, saved];
+      });
+
+      // If user was adding/editing a product, auto-select this new category
+      setEditingProduct((prev) => (prev ? { ...prev, category: saved.name } : prev));
+
       await loadAllAdminData();
       if (onRefreshStorefront) onRefreshStorefront();
     } catch (err: any) {
@@ -285,8 +299,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleDeleteCategory = async (id: string, name: string) => {
     try {
-      setCategories((prev) => prev.filter((c) => c.id !== id));
-      await removeCategory(id);
+      setCategories((prev) => prev.filter((c) => c.id !== id && c.name.toLowerCase() !== name.toLowerCase()));
+      await removeCategory(id, name);
       showToast(`Category "${name}" removed.`);
       await loadAllAdminData();
       if (onRefreshStorefront) onRefreshStorefront();
@@ -1149,16 +1163,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-[#2A1810] mb-1 uppercase tracking-wider">Category *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-bold text-[#2A1810] uppercase tracking-wider">Category *</label>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryModalOpen(true)}
+                      className="text-[10px] font-bold text-[#9B1C2F] hover:text-[#7A1522] uppercase tracking-wider flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3 text-[#D4A017]" />
+                      <span>New Category</span>
+                    </button>
+                  </div>
                   <select
-                    value={editingProduct.category || 'Necklaces'}
+                    value={editingProduct.category || categories[0]?.name || 'Necklaces'}
                     onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] cursor-pointer font-medium text-[#2A1810]"
                   >
-                    <option value="Necklaces">Necklaces</option>
-                    <option value="Earrings">Earrings</option>
-                    <option value="Pendants">Pendants</option>
-                    <option value="Bangles">Bangles</option>
+                    {categories.length > 0 ? (
+                      categories.map((cat) => (
+                        <option key={cat.id || cat.name} value={cat.name}>
+                          {cat.name}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="Necklaces">Necklaces</option>
+                        <option value="Earrings">Earrings</option>
+                        <option value="Pendants">Pendants</option>
+                        <option value="Bangles">Bangles</option>
+                      </>
+                    )}
+                    {/* Ensure existing custom category is present if not in categories list */}
+                    {editingProduct.category &&
+                      !categories.some((c) => c.name.toLowerCase() === editingProduct.category?.toLowerCase()) && (
+                        <option value={editingProduct.category}>{editingProduct.category}</option>
+                      )}
                   </select>
                 </div>
 
@@ -1286,7 +1325,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       {/* --- MODAL 2: ADD CATEGORY MODAL --- */}
       {categoryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2A1810]/70 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-[#2A1810]/70 backdrop-blur-xs">
           <div className="relative w-full max-w-md bg-white border-2 border-[#D4A017] rounded-sm shadow-2xl p-6">
             <button
               onClick={() => setCategoryModalOpen(false)}
@@ -1303,24 +1342,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Anklets"
+                  placeholder="e.g. Anklets, Mangalsutra, Bridal Sets"
                   value={catName}
                   onChange={(e) => setCatName(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-sm border-2 border-[#EFE1C8] bg-white font-medium text-[#2A1810]"
+                  className="w-full px-3.5 py-2.5 rounded-sm border-2 border-[#EFE1C8] bg-white font-medium text-[#2A1810] focus:outline-hidden focus:border-[#D4A017]"
                 />
               </div>
 
               <div>
-                <label className="block font-bold text-[#2A1810] mb-1 uppercase tracking-wider">Category Photo *</label>
+                <label className="block font-bold text-[#2A1810] mb-1 uppercase tracking-wider">Category Photo (Optional)</label>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={handleCatImageUpload}
-                  className="text-xs text-[#7A6A5C] file:mr-2 file:py-1.5 file:px-3 file:rounded-sm file:bg-[#9B1C2F] file:text-white uppercase file:tracking-wider file:font-bold"
+                  className="text-xs text-[#7A6A5C] file:mr-2 file:py-1.5 file:px-3 file:rounded-sm file:bg-[#9B1C2F] file:text-white uppercase file:tracking-wider file:font-bold cursor-pointer"
                 />
                 {uploadingCatImage && <p className="text-[#D4A017] mt-1 font-bold">Uploading photo...</p>}
                 {catImage && (
-                  <img src={catImage} alt="Cat" className="w-20 h-20 object-cover rounded-sm mt-2 border" />
+                  <img src={catImage} alt="Cat" className="w-20 h-20 object-cover rounded-sm mt-2 border border-[#EFE1C8]" />
                 )}
               </div>
 
@@ -1328,13 +1367,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => setCategoryModalOpen(false)}
-                  className="px-4 py-2 rounded-sm bg-white text-[#2A1810] border border-[#EFE1C8] font-bold uppercase tracking-wider"
+                  className="px-4 py-2 rounded-sm bg-white text-[#2A1810] border border-[#EFE1C8] font-bold uppercase tracking-wider hover:bg-[#FFF8EC] cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-sm bg-[#9B1C2F] text-white font-bold uppercase tracking-wider border-b-2 border-[#D4A017]"
+                  className="px-5 py-2 rounded-sm bg-[#9B1C2F] text-white font-bold uppercase tracking-wider border-b-2 border-[#D4A017] hover:bg-[#7A1522] cursor-pointer"
                 >
                   Save Category
                 </button>

@@ -408,48 +408,65 @@ export async function fetchCategories(): Promise<Category[]> {
     const querySnapshot = await getDocs(collection(db, 'categories'));
     let cats: Category[];
     if (querySnapshot.empty) {
-      cats = localCats !== null ? localCats : INITIAL_CATEGORIES;
+      cats = localCats !== null && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
     } else {
-      cats = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Category));
+      const remoteCats = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Category));
+      // Create unified category list combining Firestore and initial/local if not deleted
+      const catMap = new Map<string, Category>();
+      (localCats || INITIAL_CATEGORIES).forEach((c) => {
+        if (!deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase())) {
+          catMap.set(c.name.toLowerCase(), c);
+        }
+      });
+      remoteCats.forEach((c) => {
+        if (!deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase())) {
+          catMap.set(c.name.toLowerCase(), c);
+        }
+      });
+      cats = Array.from(catMap.values());
     }
-    const filtered = cats.filter((c) => !deletedIds.has(c.id));
+    const filtered = cats.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
     saveLocalCategories(filtered);
     return filtered;
   } catch (error) {
     console.warn('Error fetching categories, returning local:', error);
-    const fallback = localCats !== null ? localCats : INITIAL_CATEGORIES;
-    const filtered = fallback.filter((c) => !deletedIds.has(c.id));
+    const fallback = localCats !== null && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
+    const filtered = fallback.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
     saveLocalCategories(filtered);
     return filtered;
   }
 }
 
-export async function saveCategory(category: { name: string; image: string }): Promise<Category> {
-  const newDocRef = doc(collection(db, 'categories'));
+export async function saveCategory(category: { id?: string; name: string; image?: string }): Promise<Category> {
+  const catId = category.id || doc(collection(db, 'categories')).id;
   const newCat: Category = {
-    id: newDocRef.id,
-    name: category.name,
-    image: category.image,
+    id: catId,
+    name: category.name.trim(),
+    image: category.image || 'https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?auto=format&fit=crop&q=80&w=800',
   };
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.id);
+  removeDeletedId(DELETED_CATEGORIES_KEY, newCat.name.toLowerCase());
   try {
-    await setDoc(newDocRef, cleanFirestoreData(newCat));
+    await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat));
   } catch (e) {
     console.warn('Firestore saveCategory failed:', e);
   }
 
   const current = getLocalCategories() || INITIAL_CATEGORIES;
-  const updated = [...current.filter((c) => c.id !== newCat.id), newCat];
+  const updated = [...current.filter((c) => c.id !== newCat.id && c.name.toLowerCase() !== newCat.name.toLowerCase()), newCat];
   saveLocalCategories(updated);
 
   return newCat;
 }
 
-export async function removeCategory(id: string): Promise<void> {
+export async function removeCategory(id: string, name?: string): Promise<void> {
   addDeletedId(DELETED_CATEGORIES_KEY, id);
+  if (name) {
+    addDeletedId(DELETED_CATEGORIES_KEY, name.toLowerCase());
+  }
 
   const current = getLocalCategories() || INITIAL_CATEGORIES;
-  const updated = current.filter((c) => c.id !== id);
+  const updated = current.filter((c) => c.id !== id && (!name || c.name.toLowerCase() !== name.toLowerCase()));
   saveLocalCategories(updated);
 
   deleteDoc(doc(db, 'categories', id)).catch((e) => {

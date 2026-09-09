@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShoppingBag, Eye, Star } from 'lucide-react';
+import { ShoppingBag, Eye } from 'lucide-react';
 import { Product } from '../types';
 
 interface ProductCardProps {
@@ -28,21 +28,6 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
         />
 
-        {/* Badges */}
-        <div className="absolute top-2 left-2 flex flex-col gap-1 z-10">
-          {discount > 0 && (
-            <span className="bg-[#9B1C2F] text-white text-[10px] font-bold px-2 py-0.5 rounded-sm border-b-2 border-[#D4A017] uppercase tracking-wider">
-              {discount}% OFF
-            </span>
-          )}
-          {product.featured && (
-            <span className="bg-[#D4A017] text-[#2A1810] text-[10px] font-bold px-2 py-0.5 rounded-sm flex items-center gap-1 shadow-2xs uppercase tracking-wider">
-              <Star className="w-2.5 h-2.5 fill-current text-[#2A1810]" />
-              Featured
-            </span>
-          )}
-        </div>
-
         {/* Quick View overlay */}
         <div className="absolute inset-0 bg-[#2A1810]/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
           <span className="bg-white text-[#9B1C2F] text-xs font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-sm shadow-md flex items-center gap-1.5 border-b-2 border-[#D4A017]">
@@ -69,13 +54,18 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
         <div className="pt-2 border-t border-[#EFE1C8] flex items-center justify-between gap-2">
           <div>
-            <div className="flex items-baseline gap-1.5">
+            <div className="flex items-baseline flex-wrap gap-1.5">
               <span className="font-serif text-base sm:text-lg font-bold text-[#9B1C2F]">
                 ₹{product.price.toLocaleString('en-IN')}
               </span>
               {product.mrp > product.price && (
                 <span className="text-xs text-[#7A6A5C] line-through">
                   ₹{product.mrp.toLocaleString('en-IN')}
+                </span>
+              )}
+              {discount > 0 && (
+                <span className="bg-[#9B1C2F] text-white text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded-xs border-b border-[#D4A017] uppercase tracking-wider">
+                  {discount}% OFF
                 </span>
               )}
             </div>

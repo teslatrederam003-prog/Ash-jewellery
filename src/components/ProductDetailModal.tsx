@@ -56,11 +56,6 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 alt={product.name}
                 className="w-full h-full object-cover"
               />
-              {discount > 0 && (
-                <span className="absolute top-3 left-3 bg-[#9B1C2F] text-white border-b-2 border-[#D4A017] text-xs font-bold px-2.5 py-1 rounded-sm uppercase tracking-wider shadow-xs">
-                  SAVE {discount}%
-                </span>
-              )}
             </div>
 
             {/* Thumbnail Row */}
@@ -103,6 +98,11 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 {product.mrp > product.price && (
                   <span className="text-sm sm:text-base text-[#7A6A5C] line-through font-medium">
                     ₹{product.mrp.toLocaleString('en-IN')}
+                  </span>
+                )}
+                {discount > 0 && (
+                  <span className="bg-[#9B1C2F] text-white text-xs font-bold px-2 py-0.5 rounded-sm border-b border-[#D4A017] uppercase tracking-wider shadow-2xs">
+                    {discount}% OFF
                   </span>
                 )}
                 <span className="text-[10px] text-emerald-800 font-bold bg-emerald-50 px-2.5 py-1 rounded-sm border border-emerald-300 uppercase tracking-wider">
