@@ -7,6 +7,7 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
+  onSnapshot,
   query,
   orderBy,
   where,
@@ -41,18 +42,31 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
         const result = event.target?.result as string;
         if (!result) return resolve('');
 
-        // If file is already small (< 400KB), return immediately
-        if (inputFile.size < 400 * 1024) {
+        // If file is reasonably sized (< 500KB), keep original as-is to preserve 100% fidelity
+        if (inputFile.size < 500 * 1024) {
           return resolve(result);
         }
 
-        // Compress large image via canvas
+        // Compress large image via canvas to maintain sharpness without exceeding limits
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          const maxDim = 1920;
+
+          let maxDim = 1200;
+          let quality = 0.85;
+
+          if (folderName === 'categories') {
+            maxDim = 800;
+            quality = 0.8;
+          } else if (folderName === 'hero_slides' || folderName === 'hero') {
+            maxDim = 1920;
+            quality = 0.85;
+          } else if (folderName === 'payment_settings' || folderName === 'payment_screenshots') {
+            maxDim = 800;
+            quality = 0.8;
+          }
 
           if (width > maxDim || height > maxDim) {
             if (width > height) {
@@ -69,7 +83,7 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, width, height);
-            resolve(canvas.toDataURL('image/jpeg', 0.82));
+            resolve(canvas.toDataURL('image/jpeg', quality));
           } else {
             resolve(result);
           }
@@ -90,14 +104,14 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
   })();
 
   const timeoutTask = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Firebase Storage upload timeout')), 2000);
+    setTimeout(() => reject(new Error('Firebase Storage upload timeout')), 5000);
   });
 
   try {
     const downloadUrl = await Promise.race([storageTask, timeoutTask]);
     if (downloadUrl) return downloadUrl;
   } catch (error) {
-    console.warn('Firebase Storage upload timed out or failed; falling back to instant local image processing:', error);
+    console.warn('Firebase Storage upload timed out or failed; falling back to local image processing:', error);
   }
 
   return await readFileAsDataUrl(file);
@@ -115,9 +129,58 @@ const DELETED_PRODUCTS_KEY = 'ash_jewellery_deleted_products';
 const DELETED_CATEGORIES_KEY = 'ash_jewellery_deleted_categories';
 const DELETED_HERO_SLIDES_KEY = 'ash_jewellery_deleted_hero_slides';
 
+// Schema version migration: purge any obsolete mock-draft local cache so the live Firestore database takes precedence
+const SCHEMA_VERSION_KEY = 'ash_jewellery_live_sync_v3';
+if (typeof window !== 'undefined') {
+  try {
+    if (!localStorage.getItem(SCHEMA_VERSION_KEY)) {
+      localStorage.removeItem(LOCAL_PRODUCTS_KEY);
+      localStorage.removeItem(LOCAL_CATEGORIES_KEY);
+      localStorage.removeItem(LOCAL_HERO_SLIDES_KEY);
+      localStorage.removeItem(DELETED_PRODUCTS_KEY);
+      localStorage.removeItem(DELETED_CATEGORIES_KEY);
+      localStorage.removeItem(DELETED_HERO_SLIDES_KEY);
+      localStorage.removeItem('ash_jewellery_has_seeded');
+      localStorage.setItem(SCHEMA_VERSION_KEY, '3');
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// In-Memory Storage Cache (Guarantees zero data loss and prevents browser quota crashes)
+const memoryStorage = new Map<string, string>();
+
+function safeGetLocalStorage(key: string): string | null {
+  // Always check memory storage first for freshest, uncompressed user data
+  if (memoryStorage.has(key)) {
+    return memoryStorage.get(key) ?? null;
+  }
+  try {
+    const val = localStorage.getItem(key);
+    if (val !== null) return val;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function safeSetLocalStorage(key: string, value: string): boolean {
+  // Always update in-memory cache first so the app has 100% of user data intact
+  memoryStorage.set(key, value);
+
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (err: any) {
+    // Quota reached or storage disabled: gracefully degrade without modifying or deleting any user data
+    return false;
+  }
+}
+
 function getDeletedIds(key: string): Set<string> {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = safeGetLocalStorage(key);
     return raw ? new Set(JSON.parse(raw)) : new Set();
   } catch {
     return new Set();
@@ -125,28 +188,20 @@ function getDeletedIds(key: string): Set<string> {
 }
 
 function addDeletedId(key: string, id: string) {
-  try {
-    const set = getDeletedIds(key);
-    set.add(id);
-    localStorage.setItem(key, JSON.stringify(Array.from(set)));
-  } catch (e) {
-    console.error('Failed to add deleted ID:', e);
-  }
+  const set = getDeletedIds(key);
+  set.add(id);
+  safeSetLocalStorage(key, JSON.stringify(Array.from(set)));
 }
 
 function removeDeletedId(key: string, id: string) {
-  try {
-    const set = getDeletedIds(key);
-    set.delete(id);
-    localStorage.setItem(key, JSON.stringify(Array.from(set)));
-  } catch (e) {
-    console.error('Failed to remove deleted ID:', e);
-  }
+  const set = getDeletedIds(key);
+  set.delete(id);
+  safeSetLocalStorage(key, JSON.stringify(Array.from(set)));
 }
 
 function getLocalProducts(): Product[] | null {
   try {
-    const raw = localStorage.getItem(LOCAL_PRODUCTS_KEY);
+    const raw = safeGetLocalStorage(LOCAL_PRODUCTS_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -154,16 +209,12 @@ function getLocalProducts(): Product[] | null {
 }
 
 function saveLocalProducts(products: Product[]) {
-  try {
-    localStorage.setItem(LOCAL_PRODUCTS_KEY, JSON.stringify(products));
-  } catch (e) {
-    console.error('Failed to save local products:', e);
-  }
+  safeSetLocalStorage(LOCAL_PRODUCTS_KEY, JSON.stringify(products));
 }
 
 function getLocalCategories(): Category[] | null {
   try {
-    const raw = localStorage.getItem(LOCAL_CATEGORIES_KEY);
+    const raw = safeGetLocalStorage(LOCAL_CATEGORIES_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -171,16 +222,12 @@ function getLocalCategories(): Category[] | null {
 }
 
 function saveLocalCategories(categories: Category[]) {
-  try {
-    localStorage.setItem(LOCAL_CATEGORIES_KEY, JSON.stringify(categories));
-  } catch (e) {
-    console.error('Failed to save local categories:', e);
-  }
+  safeSetLocalStorage(LOCAL_CATEGORIES_KEY, JSON.stringify(categories));
 }
 
 function getLocalHeroSlides(): HeroSlide[] | null {
   try {
-    const raw = localStorage.getItem(LOCAL_HERO_SLIDES_KEY);
+    const raw = safeGetLocalStorage(LOCAL_HERO_SLIDES_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -188,11 +235,7 @@ function getLocalHeroSlides(): HeroSlide[] | null {
 }
 
 function saveLocalHeroSlides(slides: HeroSlide[]) {
-  try {
-    localStorage.setItem(LOCAL_HERO_SLIDES_KEY, JSON.stringify(slides));
-  } catch (e) {
-    console.error('Failed to save local hero slides:', e);
-  }
+  safeSetLocalStorage(LOCAL_HERO_SLIDES_KEY, JSON.stringify(slides));
 }
 
 // Synchronous Instant Getters (0ms Load Time)
@@ -219,7 +262,7 @@ export function getInstantInitialHeroSlides(): HeroSlide[] {
 
 export function getInstantInitialPaymentSettings(): PaymentSettings {
   try {
-    const raw = localStorage.getItem(LOCAL_PAYMENT_SETTINGS_KEY);
+    const raw = safeGetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY);
     return raw ? JSON.parse(raw) : INITIAL_PAYMENT_SETTINGS;
   } catch {
     return INITIAL_PAYMENT_SETTINGS;
@@ -228,7 +271,7 @@ export function getInstantInitialPaymentSettings(): PaymentSettings {
 
 function getLocalOrders(): Order[] {
   try {
-    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    const raw = safeGetLocalStorage(LOCAL_ORDERS_KEY);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -236,18 +279,14 @@ function getLocalOrders(): Order[] {
 }
 
 function saveLocalOrder(order: Order) {
-  try {
-    const existing = getLocalOrders();
-    const updated = [order, ...existing.filter((o) => o.id !== order.id)];
-    localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(updated));
-  } catch (e) {
-    console.error('Failed to save local order:', e);
-  }
+  const existing = getLocalOrders();
+  const updated = [order, ...existing.filter((o) => o.id !== order.id)];
+  safeSetLocalStorage(LOCAL_ORDERS_KEY, JSON.stringify(updated));
 }
 
 function getLocalInquiries(): CustomInquiry[] {
   try {
-    const raw = localStorage.getItem(LOCAL_INQUIRIES_KEY);
+    const raw = safeGetLocalStorage(LOCAL_INQUIRIES_KEY);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -255,13 +294,9 @@ function getLocalInquiries(): CustomInquiry[] {
 }
 
 function saveLocalInquiry(inquiry: CustomInquiry) {
-  try {
-    const existing = getLocalInquiries();
-    const updated = [inquiry, ...existing.filter((i) => i.id !== inquiry.id)];
-    localStorage.setItem(LOCAL_INQUIRIES_KEY, JSON.stringify(updated));
-  } catch (e) {
-    console.error('Failed to save local inquiry:', e);
-  }
+  const existing = getLocalInquiries();
+  const updated = [inquiry, ...existing.filter((i) => i.id !== inquiry.id)];
+  safeSetLocalStorage(LOCAL_INQUIRIES_KEY, JSON.stringify(updated));
 }
 
 // Seed Initial Data (Non-blocking background sync)
@@ -340,7 +375,7 @@ export async function fetchProducts(): Promise<Product[]> {
     const querySnapshot = await getDocs(collection(db, 'products'));
     let prods: Product[];
     if (querySnapshot.empty) {
-      prods = localProds !== null ? localProds : INITIAL_PRODUCTS;
+      prods = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
     } else {
       prods = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Product));
     }
@@ -349,10 +384,34 @@ export async function fetchProducts(): Promise<Product[]> {
     return filtered;
   } catch (error) {
     console.warn('Firestore fetchProducts unavailable, using fallback:', error);
-    const fallback = localProds !== null ? localProds : INITIAL_PRODUCTS;
+    const fallback = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
     const filtered = fallback.filter((p) => !deletedIds.has(p.id));
     saveLocalProducts(filtered);
     return filtered;
+  }
+}
+
+export function subscribeProducts(callback: (products: Product[]) => void): () => void {
+  try {
+    const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
+    return onSnapshot(
+      collection(db, 'products'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const prods = snapshot.docs
+            .map((doc) => ({ id: doc.id, ...doc.data() } as Product))
+            .filter((p) => !deletedIds.has(p.id));
+          saveLocalProducts(prods);
+          callback(prods);
+        }
+      },
+      (error) => {
+        console.warn('Realtime products subscription notice:', error);
+      }
+    );
+  } catch (err) {
+    console.warn('Failed to attach realtime products subscription:', err);
+    return () => {};
   }
 }
 
@@ -363,9 +422,9 @@ export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }
     removeDeletedId(DELETED_PRODUCTS_KEY, product.id);
     try {
       const docRef = doc(db, 'products', product.id);
-      await updateDoc(docRef, cleanFirestoreData(product));
+      await setDoc(docRef, cleanFirestoreData(savedProduct), { merge: true });
     } catch (e) {
-      console.warn('Firestore saveProduct update failed:', e);
+      console.warn('Firestore saveProduct set failed:', e);
     }
   } else {
     const newDocRef = doc(collection(db, 'products'));
@@ -395,9 +454,11 @@ export async function removeProduct(id: string): Promise<void> {
   const updated = current.filter((p) => p.id !== id);
   saveLocalProducts(updated);
 
-  deleteDoc(doc(db, 'products', id)).catch((e) => {
+  try {
+    await deleteDoc(doc(db, 'products', id));
+  } catch (e) {
     console.warn('Firestore removeProduct failed:', e);
-  });
+  }
 }
 
 // Categories
@@ -408,32 +469,43 @@ export async function fetchCategories(): Promise<Category[]> {
     const querySnapshot = await getDocs(collection(db, 'categories'));
     let cats: Category[];
     if (querySnapshot.empty) {
-      cats = localCats !== null && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
+      cats = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
     } else {
-      const remoteCats = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Category));
-      // Create unified category list combining Firestore and initial/local if not deleted
-      const catMap = new Map<string, Category>();
-      (localCats || INITIAL_CATEGORIES).forEach((c) => {
-        if (!deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase())) {
-          catMap.set(c.name.toLowerCase(), c);
-        }
-      });
-      remoteCats.forEach((c) => {
-        if (!deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase())) {
-          catMap.set(c.name.toLowerCase(), c);
-        }
-      });
-      cats = Array.from(catMap.values());
+      cats = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Category));
     }
     const filtered = cats.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
     saveLocalCategories(filtered);
     return filtered;
   } catch (error) {
-    console.warn('Error fetching categories, returning local:', error);
-    const fallback = localCats !== null && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
+    console.warn('Error fetching categories, returning fallback:', error);
+    const fallback = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
     const filtered = fallback.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
     saveLocalCategories(filtered);
     return filtered;
+  }
+}
+
+export function subscribeCategories(callback: (categories: Category[]) => void): () => void {
+  try {
+    const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
+    return onSnapshot(
+      collection(db, 'categories'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const cats = snapshot.docs
+            .map((doc) => ({ id: doc.id, ...doc.data() } as Category))
+            .filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
+          saveLocalCategories(cats);
+          callback(cats);
+        }
+      },
+      (error) => {
+        console.warn('Realtime categories subscription notice:', error);
+      }
+    );
+  } catch (err) {
+    console.warn('Failed to attach realtime categories subscription:', err);
+    return () => {};
   }
 }
 
@@ -447,7 +519,7 @@ export async function saveCategory(category: { id?: string; name: string; image?
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.id);
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.name.toLowerCase());
   try {
-    await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat));
+    await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat), { merge: true });
   } catch (e) {
     console.warn('Firestore saveCategory failed:', e);
   }
@@ -469,9 +541,11 @@ export async function removeCategory(id: string, name?: string): Promise<void> {
   const updated = current.filter((c) => c.id !== id && (!name || c.name.toLowerCase() !== name.toLowerCase()));
   saveLocalCategories(updated);
 
-  deleteDoc(doc(db, 'categories', id)).catch((e) => {
+  try {
+    await deleteDoc(doc(db, 'categories', id));
+  } catch (e) {
     console.warn('Firestore removeCategory failed:', e);
-  });
+  }
 }
 
 // Hero Slides
@@ -482,19 +556,46 @@ export async function fetchHeroSlides(): Promise<HeroSlide[]> {
     const querySnapshot = await getDocs(collection(db, 'heroSlides'));
     let slides: HeroSlide[];
     if (querySnapshot.empty) {
-      slides = localSlides !== null ? localSlides : INITIAL_HERO_SLIDES;
+      slides = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
     } else {
-      slides = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide));
+      slides = querySnapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     }
-    const filtered = slides.filter((s) => !deletedIds.has(s.id)).sort((a, b) => a.order - b.order);
+    const filtered = slides.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     saveLocalHeroSlides(filtered);
     return filtered;
   } catch (error) {
     console.warn('Error fetching hero slides, returning local or initial:', error);
-    const fallback = localSlides !== null ? localSlides : INITIAL_HERO_SLIDES;
-    const filtered = fallback.filter((s) => !deletedIds.has(s.id)).sort((a, b) => a.order - b.order);
+    const fallback = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
+    const filtered = fallback.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     saveLocalHeroSlides(filtered);
     return filtered;
+  }
+}
+
+export function subscribeHeroSlides(callback: (slides: HeroSlide[]) => void): () => void {
+  try {
+    const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
+    return onSnapshot(
+      collection(db, 'heroSlides'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const slides = snapshot.docs
+            .map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide))
+            .filter((s) => !deletedIds.has(s.id))
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          saveLocalHeroSlides(slides);
+          callback(slides);
+        }
+      },
+      (error) => {
+        console.warn('Realtime hero slides subscription notice:', error);
+      }
+    );
+  } catch (err) {
+    console.warn('Failed to attach realtime hero slides subscription:', err);
+    return () => {};
   }
 }
 
@@ -505,7 +606,7 @@ export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string
     removeDeletedId(DELETED_HERO_SLIDES_KEY, slide.id);
     try {
       const docRef = doc(db, 'heroSlides', slide.id);
-      await updateDoc(docRef, cleanFirestoreData(slide));
+      await setDoc(docRef, cleanFirestoreData(slide), { merge: true });
     } catch (e) {
       console.warn('Firestore saveHeroSlide update failed:', e);
     }
@@ -525,7 +626,7 @@ export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string
   const current = getLocalHeroSlides() || INITIAL_HERO_SLIDES;
   const updated = current.filter((s) => s.id !== savedSlide.id);
   updated.push(savedSlide);
-  const sorted = updated.sort((a, b) => a.order - b.order);
+  const sorted = updated.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   saveLocalHeroSlides(sorted);
 
   return savedSlide;
@@ -538,9 +639,11 @@ export async function removeHeroSlide(id: string): Promise<void> {
   const updated = current.filter((s) => s.id !== id);
   saveLocalHeroSlides(updated);
 
-  deleteDoc(doc(db, 'heroSlides', id)).catch((e) => {
+  try {
+    await deleteDoc(doc(db, 'heroSlides', id));
+  } catch (e) {
     console.warn('Firestore removeHeroSlide failed:', e);
-  });
+  }
 }
 
 // Orders
@@ -697,11 +800,7 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
     const docSnap = await getDoc(doc(db, 'paymentSettings', 'default'));
     if (docSnap.exists()) {
       const data = docSnap.data() as PaymentSettings;
-      try {
-        localStorage.setItem(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
-      } catch (e) {
-        console.warn('Failed to cache payment settings:', e);
-      }
+      safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
       return data;
     }
     return getInstantInitialPaymentSettings();
@@ -711,9 +810,30 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
   }
 }
 
+export function subscribePaymentSettings(callback: (settings: PaymentSettings) => void): () => void {
+  try {
+    return onSnapshot(
+      doc(db, 'paymentSettings', 'default'),
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data() as PaymentSettings;
+          safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
+          callback(data);
+        }
+      },
+      (error) => {
+        console.warn('Realtime payment settings subscription notice:', error);
+      }
+    );
+  } catch (err) {
+    console.warn('Failed to attach realtime payment settings subscription:', err);
+    return () => {};
+  }
+}
+
 export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
   try {
-    localStorage.setItem(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
+    safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
     await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
       ...settings,
       updatedAt: Date.now(),

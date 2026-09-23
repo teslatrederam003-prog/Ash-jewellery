@@ -83,6 +83,7 @@ export interface CustomInquiry {
 export interface PaymentSettings {
   upiQrCodeUrl: string;
   upiId: string;
+  updatedAt?: number;
 }
 
 export type ActivePage =

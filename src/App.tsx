@@ -15,6 +15,10 @@ import {
   fetchCategories,
   fetchHeroSlides,
   fetchPaymentSettings,
+  subscribeProducts,
+  subscribeCategories,
+  subscribeHeroSlides,
+  subscribePaymentSettings,
   seedDatabaseIfEmpty,
   getInstantInitialProducts,
   getInstantInitialCategories,
@@ -101,8 +105,12 @@ export default function App() {
         setUserEmail(user.email);
         setUserId(user.uid);
         if (user.email) {
-          localStorage.setItem('ash_jewellery_local_user_email', user.email);
-          localStorage.setItem('ash_jewellery_local_user_id', user.uid);
+          try {
+            localStorage.setItem('ash_jewellery_local_user_email', user.email);
+            localStorage.setItem('ash_jewellery_local_user_id', user.uid);
+          } catch (e) {
+            console.warn('Could not save user email to local storage:', e);
+          }
         }
       } else {
         // Fallback for custom/admin auth or before token re-verification
@@ -141,6 +149,26 @@ export default function App() {
 
   useEffect(() => {
     loadStorefrontData();
+
+    const unsubProds = subscribeProducts((prods) => {
+      if (prods && prods.length > 0) setProducts(prods);
+    });
+    const unsubCats = subscribeCategories((cats) => {
+      if (cats && cats.length > 0) setCategories(cats);
+    });
+    const unsubSlides = subscribeHeroSlides((slides) => {
+      if (slides && slides.length > 0) setHeroSlides(slides);
+    });
+    const unsubPay = subscribePaymentSettings((pay) => {
+      if (pay) setPaymentSettings(pay);
+    });
+
+    return () => {
+      unsubProds();
+      unsubCats();
+      unsubSlides();
+      unsubPay();
+    };
   }, []);
 
   // Cart Handlers
@@ -203,8 +231,9 @@ export default function App() {
 
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
 
-  // Featured products for homepage
-  const featuredProducts = products.filter((p) => p.featured).slice(0, 8);
+  // Featured products for homepage (prioritize featured items, fallback to latest products)
+  const featured = products.filter((p) => p.featured);
+  const featuredProducts = featured.length > 0 ? featured.slice(0, 8) : products.slice(0, 8);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FFF8EC] text-[#2A1810]">
