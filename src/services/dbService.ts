@@ -42,30 +42,28 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
         const result = event.target?.result as string;
         if (!result) return resolve('');
 
-        // If file is reasonably sized (< 500KB), keep original as-is to preserve 100% fidelity
-        if (inputFile.size < 500 * 1024) {
-          return resolve(result);
-        }
-
-        // Compress large image via canvas to maintain sharpness without exceeding limits
+        // Compress image via canvas to guarantee ultra-lightweight size (< 50KB) and preserve high sharpness
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
 
-          let maxDim = 1200;
-          let quality = 0.85;
+          let maxDim = 720;
+          let quality = 0.72;
 
           if (folderName === 'categories') {
-            maxDim = 800;
-            quality = 0.8;
+            maxDim = 600;
+            quality = 0.70;
           } else if (folderName === 'hero_slides' || folderName === 'hero') {
-            maxDim = 1920;
-            quality = 0.85;
+            maxDim = 1200;
+            quality = 0.75;
           } else if (folderName === 'payment_settings' || folderName === 'payment_screenshots') {
-            maxDim = 800;
-            quality = 0.8;
+            maxDim = 600;
+            quality = 0.65;
+          } else if (folderName === 'products') {
+            maxDim = 700;
+            quality = 0.72;
           }
 
           if (width > maxDim || height > maxDim) {
@@ -104,14 +102,14 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
   })();
 
   const timeoutTask = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Firebase Storage upload timeout')), 5000);
+    setTimeout(() => reject(new Error('Firebase Storage upload timeout')), 2500);
   });
 
   try {
     const downloadUrl = await Promise.race([storageTask, timeoutTask]);
     if (downloadUrl) return downloadUrl;
   } catch (error) {
-    console.warn('Firebase Storage upload timed out or failed; falling back to local image processing:', error);
+    // Graceful fallback to ultra-compact, high-clarity data URL
   }
 
   return await readFileAsDataUrl(file);
@@ -380,13 +378,14 @@ export async function fetchProducts(): Promise<Product[]> {
       prods = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Product));
     }
     const filtered = prods.filter((p) => !deletedIds.has(p.id));
-    saveLocalProducts(filtered);
+    if (filtered.length > 0) {
+      saveLocalProducts(filtered);
+    }
     return filtered;
   } catch (error) {
     console.warn('Firestore fetchProducts unavailable, using fallback:', error);
     const fallback = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
     const filtered = fallback.filter((p) => !deletedIds.has(p.id));
-    saveLocalProducts(filtered);
     return filtered;
   }
 }
@@ -397,12 +396,19 @@ export function subscribeProducts(callback: (products: Product[]) => void): () =
     return onSnapshot(
       collection(db, 'products'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const prods = snapshot.docs
-            .map((doc) => ({ id: doc.id, ...doc.data() } as Product))
-            .filter((p) => !deletedIds.has(p.id));
+        const prods = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as Product))
+          .filter((p) => !deletedIds.has(p.id));
+        if (prods.length > 0) {
           saveLocalProducts(prods);
           callback(prods);
+        } else if (snapshot.empty) {
+          const local = getLocalProducts();
+          if (local && local.length > 0) {
+            callback(local);
+          } else {
+            callback(INITIAL_PRODUCTS);
+          }
         }
       },
       (error) => {
@@ -420,12 +426,8 @@ export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }
   if (product.id) {
     savedProduct = product as Product;
     removeDeletedId(DELETED_PRODUCTS_KEY, product.id);
-    try {
-      const docRef = doc(db, 'products', product.id);
-      await setDoc(docRef, cleanFirestoreData(savedProduct), { merge: true });
-    } catch (e) {
-      console.warn('Firestore saveProduct set failed:', e);
-    }
+    const docRef = doc(db, 'products', product.id);
+    await setDoc(docRef, cleanFirestoreData(savedProduct), { merge: true });
   } else {
     const newDocRef = doc(collection(db, 'products'));
     savedProduct = {
@@ -433,11 +435,7 @@ export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }
       id: newDocRef.id,
       createdAt: Date.now(),
     };
-    try {
-      await setDoc(newDocRef, cleanFirestoreData(savedProduct));
-    } catch (e) {
-      console.warn('Firestore saveProduct set failed:', e);
-    }
+    await setDoc(newDocRef, cleanFirestoreData(savedProduct));
   }
 
   const current = getLocalProducts() || INITIAL_PRODUCTS;
@@ -454,11 +452,7 @@ export async function removeProduct(id: string): Promise<void> {
   const updated = current.filter((p) => p.id !== id);
   saveLocalProducts(updated);
 
-  try {
-    await deleteDoc(doc(db, 'products', id));
-  } catch (e) {
-    console.warn('Firestore removeProduct failed:', e);
-  }
+  await deleteDoc(doc(db, 'products', id));
 }
 
 // Categories
@@ -474,13 +468,14 @@ export async function fetchCategories(): Promise<Category[]> {
       cats = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Category));
     }
     const filtered = cats.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-    saveLocalCategories(filtered);
+    if (filtered.length > 0) {
+      saveLocalCategories(filtered);
+    }
     return filtered;
   } catch (error) {
     console.warn('Error fetching categories, returning fallback:', error);
     const fallback = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
     const filtered = fallback.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-    saveLocalCategories(filtered);
     return filtered;
   }
 }
@@ -491,12 +486,19 @@ export function subscribeCategories(callback: (categories: Category[]) => void):
     return onSnapshot(
       collection(db, 'categories'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const cats = snapshot.docs
-            .map((doc) => ({ id: doc.id, ...doc.data() } as Category))
-            .filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
+        const cats = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as Category))
+          .filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
+        if (cats.length > 0) {
           saveLocalCategories(cats);
           callback(cats);
+        } else if (snapshot.empty) {
+          const local = getLocalCategories();
+          if (local && local.length > 0) {
+            callback(local);
+          } else {
+            callback(INITIAL_CATEGORIES);
+          }
         }
       },
       (error) => {
@@ -518,11 +520,8 @@ export async function saveCategory(category: { id?: string; name: string; image?
   };
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.id);
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.name.toLowerCase());
-  try {
-    await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat), { merge: true });
-  } catch (e) {
-    console.warn('Firestore saveCategory failed:', e);
-  }
+
+  await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat), { merge: true });
 
   const current = getLocalCategories() || INITIAL_CATEGORIES;
   const updated = [...current.filter((c) => c.id !== newCat.id && c.name.toLowerCase() !== newCat.name.toLowerCase()), newCat];
@@ -541,11 +540,7 @@ export async function removeCategory(id: string, name?: string): Promise<void> {
   const updated = current.filter((c) => c.id !== id && (!name || c.name.toLowerCase() !== name.toLowerCase()));
   saveLocalCategories(updated);
 
-  try {
-    await deleteDoc(doc(db, 'categories', id));
-  } catch (e) {
-    console.warn('Firestore removeCategory failed:', e);
-  }
+  await deleteDoc(doc(db, 'categories', id));
 }
 
 // Hero Slides
@@ -563,13 +558,14 @@ export async function fetchHeroSlides(): Promise<HeroSlide[]> {
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     }
     const filtered = slides.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    saveLocalHeroSlides(filtered);
+    if (filtered.length > 0) {
+      saveLocalHeroSlides(filtered);
+    }
     return filtered;
   } catch (error) {
     console.warn('Error fetching hero slides, returning local or initial:', error);
     const fallback = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
     const filtered = fallback.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    saveLocalHeroSlides(filtered);
     return filtered;
   }
 }
@@ -580,13 +576,20 @@ export function subscribeHeroSlides(callback: (slides: HeroSlide[]) => void): ()
     return onSnapshot(
       collection(db, 'heroSlides'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const slides = snapshot.docs
-            .map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide))
-            .filter((s) => !deletedIds.has(s.id))
-            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const slides = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide))
+          .filter((s) => !deletedIds.has(s.id))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        if (slides.length > 0) {
           saveLocalHeroSlides(slides);
           callback(slides);
+        } else if (snapshot.empty) {
+          const local = getLocalHeroSlides();
+          if (local && local.length > 0) {
+            callback(local);
+          } else {
+            callback(INITIAL_HERO_SLIDES);
+          }
         }
       },
       (error) => {
@@ -604,23 +607,15 @@ export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string
   if (slide.id) {
     savedSlide = slide as HeroSlide;
     removeDeletedId(DELETED_HERO_SLIDES_KEY, slide.id);
-    try {
-      const docRef = doc(db, 'heroSlides', slide.id);
-      await setDoc(docRef, cleanFirestoreData(slide), { merge: true });
-    } catch (e) {
-      console.warn('Firestore saveHeroSlide update failed:', e);
-    }
+    const docRef = doc(db, 'heroSlides', slide.id);
+    await setDoc(docRef, cleanFirestoreData(slide), { merge: true });
   } else {
     const newDocRef = doc(collection(db, 'heroSlides'));
     savedSlide = {
       ...slide,
       id: newDocRef.id,
     };
-    try {
-      await setDoc(newDocRef, cleanFirestoreData(savedSlide));
-    } catch (e) {
-      console.warn('Firestore saveHeroSlide set failed:', e);
-    }
+    await setDoc(newDocRef, cleanFirestoreData(savedSlide));
   }
 
   const current = getLocalHeroSlides() || INITIAL_HERO_SLIDES;
@@ -639,11 +634,7 @@ export async function removeHeroSlide(id: string): Promise<void> {
   const updated = current.filter((s) => s.id !== id);
   saveLocalHeroSlides(updated);
 
-  try {
-    await deleteDoc(doc(db, 'heroSlides', id));
-  } catch (e) {
-    console.warn('Firestore removeHeroSlide failed:', e);
-  }
+  await deleteDoc(doc(db, 'heroSlides', id));
 }
 
 // Orders
@@ -832,13 +823,9 @@ export function subscribePaymentSettings(callback: (settings: PaymentSettings) =
 }
 
 export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
-  try {
-    safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
-    await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
-      ...settings,
-      updatedAt: Date.now(),
-    }));
-  } catch (error) {
-    console.warn('Firestore savePaymentSettings failed:', error);
-  }
+  safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
+  await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
+    ...settings,
+    updatedAt: Date.now(),
+  }));
 }

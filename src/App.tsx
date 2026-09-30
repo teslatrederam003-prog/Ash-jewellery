@@ -125,31 +125,8 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Background Data Synchronization (Stale-While-Revalidate pattern)
-  const loadStorefrontData = async () => {
-    try {
-      // Run seed in non-blocking background task
-      seedDatabaseIfEmpty().catch((err) => console.warn('Background seed notice:', err));
-
-      const [pList, cList, hList, paySet] = await Promise.all([
-        fetchProducts(),
-        fetchCategories(),
-        fetchHeroSlides(),
-        fetchPaymentSettings(),
-      ]);
-
-      if (pList && pList.length > 0) setProducts(pList);
-      if (cList && cList.length > 0) setCategories(cList);
-      if (hList && hList.length > 0) setHeroSlides(hList);
-      if (paySet) setPaymentSettings(paySet);
-    } catch (err) {
-      console.error('Error in background data sync:', err);
-    }
-  };
-
+  // Realtime Live Data Synchronization
   useEffect(() => {
-    loadStorefrontData();
-
     const unsubProds = subscribeProducts((prods) => {
       if (prods && prods.length > 0) setProducts(prods);
     });
@@ -170,6 +147,23 @@ export default function App() {
       unsubPay();
     };
   }, []);
+
+  const refreshStorefront = async () => {
+    try {
+      const [pList, cList, hList, paySet] = await Promise.all([
+        fetchProducts(),
+        fetchCategories(),
+        fetchHeroSlides(),
+        fetchPaymentSettings(),
+      ]);
+      if (pList && pList.length > 0) setProducts(pList);
+      if (cList && cList.length > 0) setCategories(cList);
+      if (hList && hList.length > 0) setHeroSlides(hList);
+      if (paySet) setPaymentSettings(paySet);
+    } catch (e) {
+      console.warn('Manual refresh notice:', e);
+    }
+  };
 
   // Cart Handlers
   const handleAddToCart = (product: Product, quantity: number = 1, e?: React.MouseEvent) => {
@@ -395,7 +389,7 @@ export default function App() {
             userEmail={userEmail}
             onOpenAuth={() => setAuthModalOpen(true)}
             setActivePage={setActivePage}
-            onRefreshStorefront={loadStorefrontData}
+            onRefreshStorefront={refreshStorefront}
           />
         )}
 

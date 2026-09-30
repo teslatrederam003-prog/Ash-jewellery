@@ -88,6 +88,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingProduct, setEditingProduct] = useState<Partial<Product> | null>(null);
   const [productImages, setProductImages] = useState<string[]>([]);
   const [uploadingProdImage, setUploadingProdImage] = useState(false);
+  const [imageUrlInput, setImageUrlInput] = useState('');
 
   // 2. Category Form Modal
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -185,12 +186,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       featured: false,
     });
     setProductImages([]);
+    setImageUrlInput('');
     setProductModalOpen(true);
   };
 
   const handleOpenEditProduct = (prod: Product) => {
     setEditingProduct(prod);
     setProductImages(prod.images || []);
+    setImageUrlInput('');
     setProductModalOpen(true);
   };
 
@@ -206,6 +209,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setUploadingProdImage(false);
       }
     }
+  };
+
+  const handleAddImageUrl = () => {
+    if (!imageUrlInput.trim()) return;
+    setProductImages((prev) => [...prev, imageUrlInput.trim()]);
+    setImageUrlInput('');
   };
 
   const handleRemoveProductImage = (index: number) => {
@@ -1259,18 +1268,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 />
               </div>
 
-              {/* Photo Upload */}
+              {/* Photo Upload & URL option */}
               <div>
-                <label className="block font-bold text-[#2A1810] mb-1 uppercase tracking-wider">Product Photos (Upload to Storage)</label>
-                <div className="flex items-center gap-3 mb-2">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleProductImageUpload}
-                    disabled={uploadingProdImage}
-                    className="text-xs text-[#7A6A5C] file:mr-2 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:text-xs file:font-bold file:bg-[#9B1C2F] file:text-white cursor-pointer uppercase file:tracking-wider"
-                  />
-                  {uploadingProdImage && <span className="text-xs text-[#D4A017] font-bold animate-pulse">Uploading...</span>}
+                <label className="block font-bold text-[#2A1810] mb-1 uppercase tracking-wider">
+                  Product Photos (File Upload or Image URL)
+                </label>
+                <div className="space-y-2 mb-2">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProductImageUpload}
+                      disabled={uploadingProdImage}
+                      className="text-xs text-[#7A6A5C] file:mr-2 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:text-xs file:font-bold file:bg-[#9B1C2F] file:text-white cursor-pointer uppercase file:tracking-wider"
+                    />
+                    {uploadingProdImage && <span className="text-xs text-[#D4A017] font-bold animate-pulse">Compressing & Uploading...</span>}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="url"
+                      placeholder="Or paste external image URL (e.g. Unsplash / CDN)"
+                      value={imageUrlInput}
+                      onChange={(e) => setImageUrlInput(e.target.value)}
+                      className="flex-1 px-3 py-1.5 rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddImageUrl}
+                      disabled={!imageUrlInput.trim()}
+                      className="px-3 py-1.5 rounded-sm bg-[#FFF8EC] hover:bg-[#FBEFCB] text-[#9B1C2F] border border-[#D4A017] font-bold text-xs uppercase tracking-wider cursor-pointer disabled:opacity-50"
+                    >
+                      Add URL
+                    </button>
+                  </div>
                 </div>
 
                 {/* Thumbnails preview */}

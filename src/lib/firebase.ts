@@ -1,20 +1,31 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { initializeFirestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
 const app = initializeApp(firebaseConfig);
 
-// Initialize Firestore with specific databaseId and long-polling configuration for resilient cloud connectivity
+// Initialize Firestore with specific databaseId, long-polling and multi-tab persistent cache
 const dbId = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
   ? firebaseConfig.firestoreDatabaseId
   : undefined;
 
-export const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
-}, dbId);
+export const db = initializeFirestore(
+  app,
+  {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+    experimentalAutoDetectLongPolling: true,
+  },
+  dbId
+);
 
 // Initialize Auth
 export const auth = getAuth(app);
