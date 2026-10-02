@@ -2,31 +2,50 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Storefront collections
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.email == 'admin@ashjewellery.com' ||
+        request.auth.uid == 'Oixfy1dtGZNJRXhLMy37A0tRAgE2'
+      );
+    }
+
+    // Products catalog: public read, admin-only write
     match /products/{productId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
+    // Categories: public read, admin-only write
     match /categories/{categoryId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
+    // Hero Slides: public read, admin-only write
     match /heroSlides/{slideId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
+    // Payment Settings: public read, admin-only write
     match /paymentSettings/{settingId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
-    // Orders
+    // Orders: create allowed for checkout; read restricted to owner customer or admin; update/delete admin only
     match /orders/{orderId} {
-      allow read, write: if true;
+      allow create: if true;
+      allow read: if isAdmin() || (
+        request.auth != null && resource.data.userEmail == request.auth.token.email
+      );
+      allow update, delete: if isAdmin();
     }
 
-    // Custom Inquiries
+    // Custom Inquiries: public submission, admin-only read/management
     match /customInquiries/{inquiryId} {
-      allow read, write: if true;
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
     }
   }
 }

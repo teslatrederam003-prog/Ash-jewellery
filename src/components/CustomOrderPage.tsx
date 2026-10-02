@@ -11,6 +11,7 @@ import {
   Eye,
   Plus,
   Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import { createCustomInquiry, uploadMediaFile } from '../services/dbService';
 
@@ -31,6 +32,7 @@ export const CustomOrderPage: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [inquiryId, setInquiryId] = useState<string | null>(null);
 
   const handleFileUpload = async (files: FileList | File[]) => {
@@ -79,6 +81,7 @@ export const CustomOrderPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !phone || !details) return;
+    setSubmitError(null);
 
     try {
       setLoading(true);
@@ -93,8 +96,9 @@ export const CustomOrderPage: React.FC = () => {
       });
       setInquiryId(res.id);
       setSubmitted(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to submit custom inquiry:', err);
+      setSubmitError(err?.message || 'Failed to submit inquiry. Please try again or reach out on WhatsApp.');
     } finally {
       setLoading(false);
     }
@@ -199,6 +203,12 @@ export const CustomOrderPage: React.FC = () => {
         ) : (
           /* Form */
           <div className="bg-white border border-[#EFE1C8] rounded-3xl p-6 sm:p-10 shadow-md">
+            {submitError && (
+              <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+                <span>{submitError}</span>
+              </div>
+            )}
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                 

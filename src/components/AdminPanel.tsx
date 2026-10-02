@@ -288,7 +288,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       await loadAllAdminData();
       if (onRefreshStorefront) onRefreshStorefront();
     } catch (err: any) {
-      showToast('Failed to add category', 'error');
+      showToast('Failed to add category: ' + (err.message || 'Error'), 'error');
     }
   };
 
@@ -299,7 +299,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const url = await uploadMediaFile(e.target.files[0], 'categories');
         setCatImage(url);
       } catch (err: any) {
-        showToast('Image upload failed', 'error');
+        showToast('Image upload failed: ' + (err.message || 'Error'), 'error');
       } finally {
         setUploadingCatImage(false);
       }
@@ -338,7 +338,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       await loadAllAdminData();
       if (onRefreshStorefront) onRefreshStorefront();
     } catch (err: any) {
-      showToast('Failed to save hero slide', 'error');
+      showToast('Failed to save hero slide: ' + (err.message || 'Error'), 'error');
     }
   };
 
@@ -381,7 +381,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast(`Order status updated to "${status}"`);
       loadAllAdminData();
     } catch (err: any) {
-      showToast('Failed to update status', 'error');
+      showToast('Failed to update status: ' + (err.message || 'Error'), 'error');
     }
   };
 
@@ -391,7 +391,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast('Payment verified successfully!');
       loadAllAdminData();
     } catch (err: any) {
-      showToast('Failed to verify payment', 'error');
+      showToast('Failed to verify payment: ' + (err.message || 'Error'), 'error');
     }
   };
 
@@ -401,7 +401,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast(`Inquiry status updated to "${status}"`);
       loadAllAdminData();
     } catch (err: any) {
-      showToast('Failed to update inquiry status', 'error');
+      showToast('Failed to update inquiry status: ' + (err.message || 'Error'), 'error');
     }
   };
 
@@ -413,8 +413,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const url = await uploadMediaFile(e.target.files[0], 'payment_settings');
         setPaymentSettings((prev) => ({ ...prev, upiQrCodeUrl: url }));
         showToast('QR Code image uploaded.');
-      } catch (err) {
-        showToast('QR Upload failed', 'error');
+      } catch (err: any) {
+        showToast('QR Upload failed: ' + (err.message || 'Error'), 'error');
       }
     }
   };
@@ -425,7 +425,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       await savePaymentSettings(paymentSettings);
       showToast('Payment QR Code & UPI settings saved successfully!');
     } catch (err: any) {
-      showToast('Failed to save payment settings', 'error');
+      showToast('Failed to save payment settings: ' + (err.message || 'Error'), 'error');
     }
   };
 

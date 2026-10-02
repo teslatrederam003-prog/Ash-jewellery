@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { AlertCircle } from 'lucide-react';
 import { auth } from './lib/firebase';
 import {
   Product,
@@ -19,30 +20,41 @@ import {
   subscribeCategories,
   subscribeHeroSlides,
   subscribePaymentSettings,
-  seedDatabaseIfEmpty,
+  subscribeSyncStatus,
   getInstantInitialProducts,
   getInstantInitialCategories,
   getInstantInitialHeroSlides,
   getInstantInitialPaymentSettings,
 } from './services/dbService';
 
-// Components
+// Eagerly loaded components for instant homepage render
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { HeroBanner } from './components/HeroBanner';
 import { CategoryTiles } from './components/CategoryTiles';
 import { ProductCard } from './components/ProductCard';
-import { ProductDetailModal } from './components/ProductDetailModal';
-import { ShopPage } from './components/ShopPage';
-import { CartPage } from './components/CartPage';
-import { CheckoutPage } from './components/CheckoutPage';
-import { OrderConfirmationModal } from './components/OrderConfirmationModal';
 import { AuthModal } from './components/AuthModal';
-import { MyOrdersPage } from './components/MyOrdersPage';
-import { CustomOrderPage } from './components/CustomOrderPage';
-import { AboutUsPage } from './components/AboutUsPage';
-import { ContactUsPage } from './components/ContactUsPage';
-import { AdminPanel } from './components/AdminPanel';
+
+// Code-split pages: loaded on-demand to drastically reduce initial JS payload
+const ShopPage = lazy(() => import('./components/ShopPage').then((m) => ({ default: m.ShopPage })));
+const CartPage = lazy(() => import('./components/CartPage').then((m) => ({ default: m.CartPage })));
+const CheckoutPage = lazy(() => import('./components/CheckoutPage').then((m) => ({ default: m.CheckoutPage })));
+const MyOrdersPage = lazy(() => import('./components/MyOrdersPage').then((m) => ({ default: m.MyOrdersPage })));
+const CustomOrderPage = lazy(() => import('./components/CustomOrderPage').then((m) => ({ default: m.CustomOrderPage })));
+const AboutUsPage = lazy(() => import('./components/AboutUsPage').then((m) => ({ default: m.AboutUsPage })));
+const ContactUsPage = lazy(() => import('./components/ContactUsPage').then((m) => ({ default: m.ContactUsPage })));
+const AdminPanel = lazy(() => import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel })));
+const ProductDetailModal = lazy(() => import('./components/ProductDetailModal').then((m) => ({ default: m.ProductDetailModal })));
+const OrderConfirmationModal = lazy(() => import('./components/OrderConfirmationModal').then((m) => ({ default: m.OrderConfirmationModal })));
+
+function PageLoadingFallback() {
+  return (
+    <div className="min-h-[50vh] flex flex-col items-center justify-center py-20 bg-[#FFF8EC]">
+      <div className="w-10 h-10 border-3 border-[#D4A017] border-t-transparent rounded-full animate-spin mb-4" />
+      <p className="text-xs uppercase tracking-widest font-bold text-[#9B1C2F]">Loading...</p>
+    </div>
+  );
+}
 
 export default function App() {
   const [activePage, setActivePage] = useState<ActivePage>('home');
@@ -71,9 +83,17 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>(() => getInstantInitialCategories());
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(() => getInstantInitialHeroSlides());
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getInstantInitialPaymentSettings());
-  const [loading, setLoading] = useState(false); // Instant initial load without spinner
 
-  // Cart State
+  // Real-time synchronization status banner
+  const [isSyncDegraded, setIsSyncDegraded] = useState(false);
+
+  // Selected Category filter for Shop page
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+
+  // Selected Product for quick view / detail modal
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+
+  // Cart State - persisted in localStorage
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
       const saved = localStorage.getItem('ash_jewellery_cart');
@@ -83,46 +103,40 @@ export default function App() {
     }
   });
 
-  // Selected product & Order confirmation
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  // Confirmed Order for success modal
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
 
-  // Save cart to local storage
+  // Sync Cart to localStorage
   useEffect(() => {
     try {
       localStorage.setItem('ash_jewellery_cart', JSON.stringify(cart));
     } catch (e) {
-      console.warn('LocalStorage save failed:', e);
+      console.warn('Failed to save cart to localStorage:', e);
     }
   }, [cart]);
 
-  // Auth Listener - syncs with Firebase and maintains active persistent sessions
+  // Firebase Auth State Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUserEmail(user.email);
         setUserId(user.uid);
-        if (user.email) {
-          try {
-            localStorage.setItem('ash_jewellery_local_user_email', user.email);
-            localStorage.setItem('ash_jewellery_local_user_id', user.uid);
-          } catch (e) {
-            console.warn('Could not save user email to local storage:', e);
-          }
-        }
-      } else {
-        // Fallback for custom/admin auth or before token re-verification
-        const savedEmail = localStorage.getItem('ash_jewellery_local_user_email');
-        const savedId = localStorage.getItem('ash_jewellery_local_user_id');
-        if (savedEmail) {
-          setUserEmail(savedEmail);
-          setUserId(savedId || 'local-' + savedEmail);
+        try {
+          localStorage.setItem('ash_jewellery_local_user_email', user.email || '');
+          localStorage.setItem('ash_jewellery_local_user_id', user.uid);
+        } catch {
+          // ignore
         }
       }
     });
     return () => unsubscribe();
+  }, []);
+
+  // Listen to Firestore connection degradation
+  useEffect(() => {
+    return subscribeSyncStatus((degraded) => {
+      setIsSyncDegraded(degraded);
+    });
   }, []);
 
   // Realtime Live Data Synchronization
@@ -181,7 +195,7 @@ export default function App() {
 
   const handleUpdateCartQuantity = (productId: string, quantity: number) => {
     if (quantity <= 0) {
-      handleRemoveCartItem(productId);
+      handleRemoveFromCart(productId);
       return;
     }
     setCart((prevCart) =>
@@ -191,7 +205,7 @@ export default function App() {
     );
   };
 
-  const handleRemoveCartItem = (productId: string) => {
+  const handleRemoveFromCart = (productId: string) => {
     setCart((prevCart) => prevCart.filter((item) => item.product.id !== productId));
   };
 
@@ -199,219 +213,219 @@ export default function App() {
     setCart([]);
   };
 
-  const handleBuyNow = (product: Product, quantity: number) => {
+  const handleBuyNow = (product: Product, quantity: number = 1) => {
     handleAddToCart(product, quantity);
-    setSelectedProduct(null);
     setActivePage('checkout');
   };
 
   const handleOrderSuccess = (order: Order) => {
-    setConfirmedOrder(order);
     handleClearCart();
+    setConfirmedOrder(order);
   };
 
-  const handleLogout = async () => {
+  const handleSignOut = async () => {
     try {
-      localStorage.removeItem('ash_jewellery_local_user_email');
-      localStorage.removeItem('ash_jewellery_local_user_id');
       await signOut(auth);
-    } catch (e) {
-      console.warn('Signout failed:', e);
+    } catch {
+      // ignore
     }
     setUserEmail(null);
     setUserId(null);
-    setActivePage('home');
+    try {
+      localStorage.removeItem('ash_jewellery_local_user_email');
+      localStorage.removeItem('ash_jewellery_local_user_id');
+    } catch {
+      // ignore
+    }
+    if (activePage === 'admin' || activePage === 'my-orders') {
+      setActivePage('home');
+    }
   };
 
-  const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
-
-  // Featured products for homepage (prioritize featured items, fallback to latest products)
-  const featured = products.filter((p) => p.featured);
-  const featuredProducts = featured.length > 0 ? featured.slice(0, 8) : products.slice(0, 8);
+  const cartTotalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#FFF8EC] text-[#2A1810]">
+    <div className="min-h-screen bg-[#FFF8EC] text-[#2A1810] flex flex-col font-sans selection:bg-[#9B1C2F] selection:text-white">
       
-      {/* Navbar */}
+      {/* Resilient Connection Status Warning Banner */}
+      {isSyncDegraded && (
+        <div className="bg-[#FFF3CD] border-b border-[#FFEEBA] text-[#856404] px-4 py-2.5 text-xs font-semibold flex items-center justify-between shadow-2xs z-50">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-[#856404] shrink-0" />
+            <span>Having trouble loading the latest products — showing a previous version.</span>
+          </div>
+          <button
+            onClick={() => {
+              setIsSyncDegraded(false);
+              refreshStorefront();
+            }}
+            className="ml-4 px-3 py-1 rounded-sm bg-[#856404] text-white text-[11px] font-bold uppercase tracking-wider hover:bg-[#6c5103] transition-colors cursor-pointer"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
+
+      {/* Navigation */}
       <Navbar
         activePage={activePage}
         setActivePage={setActivePage}
-        cartCount={cartCount}
+        cartCount={cartTotalItems}
         userEmail={userEmail}
         isAdmin={isAdmin}
         onOpenAuth={() => setAuthModalOpen(true)}
-        onLogout={handleLogout}
-        searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
+        onSignOut={handleSignOut}
       />
 
-      {/* Main Content View Switcher */}
+      {/* Main Content Areas */}
       <main className="flex-1">
         
         {/* PAGE 1: HOME */}
         {activePage === 'home' && (
-          <div className="space-[#EFE1C8]">
+          <div className="space-y-12 sm:space-y-16 pb-16">
+            {/* Hero Slider */}
             <HeroBanner slides={heroSlides} setActivePage={setActivePage} />
 
+            {/* Curated Categories */}
             <CategoryTiles
               categories={categories}
-              onSelectCategory={(catName) => setSelectedCategory(catName)}
-              setActivePage={setActivePage}
+              onSelectCategory={(catName) => {
+                setSelectedCategory(catName);
+                setActivePage('shop');
+              }}
             />
 
-            {/* Featured Products Grid */}
-            <section className="py-12 bg-[#FFF8EC]">
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-8">
-                  <div>
-                    <p className="text-xs font-semibold text-[#D4A017] uppercase tracking-widest">
-                      Handcrafted Masterpieces
-                    </p>
-                    <h2 className="font-serif text-3xl font-bold text-[#2A1810]">
-                      Featured Designs
-                    </h2>
-                  </div>
-
-                  <button
-                    onClick={() => setActivePage('shop')}
-                    className="px-5 py-2 rounded-full bg-[#9B1C2F] text-[#FFF8EC] text-xs font-semibold border border-[#D4A017] hover:bg-[#7A1522] cursor-pointer"
-                  >
-                    View All {products.length} Products →
-                  </button>
+            {/* Featured Collection Section */}
+            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="flex items-center justify-between mb-8 border-b border-[#EFE1C8] pb-4">
+                <div>
+                  <h2 className="font-serif text-2xl sm:text-3xl font-bold text-[#2A1810]">
+                    Featured Adornments
+                  </h2>
+                  <p className="text-xs uppercase tracking-widest text-[#9B1C2F] mt-1 font-semibold">
+                    Handpicked Masterpieces for the Discerning Bride
+                  </p>
                 </div>
-
-                {loading ? (
-                  <div className="py-12 text-center">
-                    <div className="inline-block w-8 h-8 border-4 border-[#9B1C2F] border-t-transparent rounded-full animate-spin" />
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-                    {(featuredProducts.length > 0 ? featuredProducts : products.slice(0, 8)).map(
-                      (product) => (
-                        <ProductCard
-                          key={product.id}
-                          product={product}
-                          onSelectProduct={(p) => setSelectedProduct(p)}
-                          onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
-                        />
-                      )
-                    )}
-                  </div>
-                )}
+                <button
+                  onClick={() => setActivePage('shop')}
+                  className="text-xs font-bold uppercase tracking-wider text-[#9B1C2F] hover:text-[#D4A017] transition-colors border-b-2 border-transparent hover:border-[#D4A017] pb-0.5 cursor-pointer"
+                >
+                  View All &rarr;
+                </button>
               </div>
-            </section>
 
-            {/* Brand Story Highlight Banner */}
-            <section className="py-12 bg-gradient-to-r from-[#2A1810] via-[#9B1C2F] to-[#2A1810] text-[#FFF8EC] border-y-2 border-[#D4A017]">
-              <div className="max-w-4xl mx-auto px-4 text-center space-y-4">
-                <h3 className="font-serif text-2xl sm:text-4xl font-bold text-[#FBEFCB]">
-                  From One Dream to Another — Crafted with Love
-                </h3>
-                <p className="text-xs sm:text-sm text-[#EFE1C8] leading-relaxed max-w-2xl mx-auto">
-                  A husband-and-wife team creating meaningful jewellery with our own hands and whole heart. Customized with love, crafted with care, and made for your moments.
-                </p>
-                <div className="pt-2">
-                  <button
-                    onClick={() => {
-                      setActivePage('about');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className="px-6 py-2.5 rounded-full bg-[#D4A017] hover:bg-[#F0C75E] text-[#2A1810] font-bold text-xs shadow-md transition-colors cursor-pointer"
-                  >
-                    Read Our Full Story
-                  </button>
-                </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+                {products
+                  .filter((p) => p.featured)
+                  .slice(0, 8)
+                  .map((product) => (
+                    <ProductCard
+                      key={product.id}
+                      product={product}
+                      onSelect={(p) => setSelectedProduct(p)}
+                      onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
+                    />
+                  ))}
               </div>
             </section>
           </div>
         )}
 
-        {/* PAGE 2: SHOP */}
-        {activePage === 'shop' && (
-          <ShopPage
-            products={products}
-            categories={categories}
-            selectedCategory={selectedCategory}
-            setSelectedCategory={setSelectedCategory}
-            searchQuery={searchQuery}
-            setSearchQuery={setSearchQuery}
-            onSelectProduct={(p) => setSelectedProduct(p)}
-            onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
-            loading={loading}
-          />
-        )}
+        {/* Code-split Suspense container for deeper routes */}
+        <Suspense fallback={<PageLoadingFallback />}>
+          
+          {/* PAGE 2: SHOP */}
+          {activePage === 'shop' && (
+            <ShopPage
+              products={products}
+              categories={categories}
+              selectedCategory={selectedCategory}
+              setSelectedCategory={setSelectedCategory}
+              onSelectProduct={(p) => setSelectedProduct(p)}
+              onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
+            />
+          )}
 
-        {/* PAGE 3: CART */}
-        {activePage === 'cart' && (
-          <CartPage
-            cart={cart}
-            onUpdateQuantity={handleUpdateCartQuantity}
-            onRemoveItem={handleRemoveCartItem}
-            onClearCart={handleClearCart}
-            setActivePage={setActivePage}
-          />
-        )}
+          {/* PAGE 3: CART */}
+          {activePage === 'cart' && (
+            <CartPage
+              cart={cart}
+              onUpdateQuantity={handleUpdateCartQuantity}
+              onRemoveItem={handleRemoveFromCart}
+              onClearCart={handleClearCart}
+              setActivePage={setActivePage}
+            />
+          )}
 
-        {/* PAGE 4: CHECKOUT */}
-        {activePage === 'checkout' && (
-          <CheckoutPage
-            cart={cart}
-            userEmail={userEmail}
-            userId={userId}
-            paymentSettings={paymentSettings}
-            onOrderSuccess={handleOrderSuccess}
-            onOpenAuth={() => setAuthModalOpen(true)}
-            setActivePage={setActivePage}
-          />
-        )}
+          {/* PAGE 4: CHECKOUT */}
+          {activePage === 'checkout' && (
+            <CheckoutPage
+              cart={cart}
+              userEmail={userEmail}
+              userId={userId}
+              paymentSettings={paymentSettings}
+              onOrderSuccess={handleOrderSuccess}
+              onOpenAuth={() => setAuthModalOpen(true)}
+              setActivePage={setActivePage}
+            />
+          )}
 
-        {/* PAGE 5: MY ORDERS */}
-        {activePage === 'my-orders' && (
-          <MyOrdersPage
-            userEmail={userEmail}
-            setActivePage={setActivePage}
-            onOpenAuth={() => setAuthModalOpen(true)}
-          />
-        )}
+          {/* PAGE 5: MY ORDERS */}
+          {activePage === 'my-orders' && (
+            <MyOrdersPage
+              userEmail={userEmail}
+              setActivePage={setActivePage}
+              onOpenAuth={() => setAuthModalOpen(true)}
+            />
+          )}
 
-        {/* PAGE 6: CUSTOM ORDERS */}
-        {activePage === 'custom-orders' && <CustomOrderPage />}
+          {/* PAGE 6: CUSTOM ORDERS */}
+          {activePage === 'custom-orders' && <CustomOrderPage />}
 
-        {/* PAGE 7: ABOUT US */}
-        {activePage === 'about' && <AboutUsPage setActivePage={setActivePage} />}
+          {/* PAGE 7: ABOUT US */}
+          {activePage === 'about' && <AboutUsPage setActivePage={setActivePage} />}
 
-        {/* PAGE 8: CONTACT US */}
-        {activePage === 'contact' && <ContactUsPage />}
+          {/* PAGE 8: CONTACT US */}
+          {activePage === 'contact' && <ContactUsPage />}
 
-        {/* PAGE 9: ADMIN PANEL */}
-        {activePage === 'admin' && (
-          <AdminPanel
-            userEmail={userEmail}
-            onOpenAuth={() => setAuthModalOpen(true)}
-            setActivePage={setActivePage}
-            onRefreshStorefront={refreshStorefront}
-          />
-        )}
+          {/* PAGE 9: ADMIN PANEL */}
+          {activePage === 'admin' && (
+            <AdminPanel
+              userEmail={userEmail}
+              onOpenAuth={() => setAuthModalOpen(true)}
+              setActivePage={setActivePage}
+              onRefreshStorefront={refreshStorefront}
+            />
+          )}
+
+        </Suspense>
 
       </main>
 
       {/* Footer */}
       <Footer setActivePage={setActivePage} />
 
-      {/* Product Detail Modal */}
-      <ProductDetailModal
-        product={selectedProduct}
-        onClose={() => setSelectedProduct(null)}
-        onAddToCart={(p, q) => handleAddToCart(p, q)}
-        onBuyNow={(p, q) => handleBuyNow(p, q)}
-      />
+      {/* Lazy Modals in Suspense */}
+      <Suspense fallback={null}>
+        {/* Product Detail Modal */}
+        {selectedProduct && (
+          <ProductDetailModal
+            product={selectedProduct}
+            onClose={() => setSelectedProduct(null)}
+            onAddToCart={(p, q) => handleAddToCart(p, q)}
+            onBuyNow={(p, q) => handleBuyNow(p, q)}
+          />
+        )}
 
-      {/* Order Confirmation Success Modal */}
-      <OrderConfirmationModal
-        order={confirmedOrder}
-        onClose={() => setConfirmedOrder(null)}
-        setActivePage={setActivePage}
-      />
+        {/* Order Confirmation Success Modal */}
+        {confirmedOrder && (
+          <OrderConfirmationModal
+            order={confirmedOrder}
+            onClose={() => setConfirmedOrder(null)}
+            setActivePage={setActivePage}
+          />
+        )}
+      </Suspense>
 
       {/* Authentication Modal */}
       <AuthModal

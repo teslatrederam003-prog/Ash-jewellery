@@ -4,14 +4,11 @@ import {
   getDocs,
   getDoc,
   setDoc,
-  addDoc,
   updateDoc,
   deleteDoc,
   onSnapshot,
   query,
-  orderBy,
   where,
-  serverTimestamp,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
@@ -33,38 +30,50 @@ import {
   INITIAL_PAYMENT_SETTINGS,
 } from '../data/initialData';
 
-// Storage Upload Helper
+// Sync Connection Status Notifier
+type SyncStatusListener = (isDegraded: boolean) => void;
+const syncStatusListeners = new Set<SyncStatusListener>();
+
+export function subscribeSyncStatus(listener: SyncStatusListener): () => void {
+  syncStatusListeners.add(listener);
+  return () => syncStatusListeners.delete(listener);
+}
+
+function notifySyncStatus(isDegraded: boolean) {
+  syncStatusListeners.forEach((listener) => {
+    try {
+      listener(isDegraded);
+    } catch {
+      // ignore
+    }
+  });
+}
+
+/**
+ * Storage Upload Helper
+ * Primary path: Firebase Storage with realistic 20-second timeout.
+ * Resilient fallback: When cloud storage is unavailable or offline, compress to a small
+ * thumbnail (< 20KB) so documents never approach Firestore's 1MB limit.
+ */
 export async function uploadMediaFile(file: File, folderName: string): Promise<string> {
-  const readFileAsDataUrl = (inputFile: File): Promise<string> => {
+  const readThumbnailAsDataUrl = (inputFile: File): Promise<string> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = (event) => {
         const result = event.target?.result as string;
         if (!result) return resolve('');
 
-        // Compress image via canvas to guarantee ultra-lightweight size (< 50KB) and preserve high sharpness
+        // DEGRADED / OFFLINE FALLBACK:
+        // When cloud storage is unreachable, cap resolution and compress heavily to guarantee
+        // ultra-compact size (< 20KB) and preserve Firestore document integrity.
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
 
-          let maxDim = 720;
-          let quality = 0.72;
-
-          if (folderName === 'categories') {
-            maxDim = 600;
-            quality = 0.70;
-          } else if (folderName === 'hero_slides' || folderName === 'hero') {
-            maxDim = 1200;
-            quality = 0.75;
-          } else if (folderName === 'payment_settings' || folderName === 'payment_screenshots') {
-            maxDim = 600;
-            quality = 0.65;
-          } else if (folderName === 'products') {
-            maxDim = 700;
-            quality = 0.72;
-          }
+          const maxDim = 400; // Thumbnail-capped dimension
+          const quality = 0.55;
 
           if (width > maxDim || height > maxDim) {
             if (width > height) {
@@ -94,6 +103,7 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
     });
   };
 
+  // Primary Path: Firebase Cloud Storage with realistic 20-second timeout
   const storageTask = (async () => {
     const filename = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     const storageRef = ref(storage, `${folderName}/${filename}`);
@@ -102,17 +112,17 @@ export async function uploadMediaFile(file: File, folderName: string): Promise<s
   })();
 
   const timeoutTask = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Firebase Storage upload timeout')), 2500);
+    setTimeout(() => reject(new Error('Firebase Storage upload timeout (20s)')), 20000);
   });
 
   try {
     const downloadUrl = await Promise.race([storageTask, timeoutTask]);
     if (downloadUrl) return downloadUrl;
   } catch (error) {
-    // Graceful fallback to ultra-compact, high-clarity data URL
+    console.warn('Firebase Storage upload unavailable, falling back to thumbnail data URL:', error);
   }
 
-  return await readFileAsDataUrl(file);
+  return await readThumbnailAsDataUrl(file);
 }
 
 // Local Storage Fallback Keys
@@ -127,245 +137,172 @@ const DELETED_PRODUCTS_KEY = 'ash_jewellery_deleted_products';
 const DELETED_CATEGORIES_KEY = 'ash_jewellery_deleted_categories';
 const DELETED_HERO_SLIDES_KEY = 'ash_jewellery_deleted_hero_slides';
 
-// Schema version migration: purge any obsolete mock-draft local cache so the live Firestore database takes precedence
-const SCHEMA_VERSION_KEY = 'ash_jewellery_live_sync_v3';
-if (typeof window !== 'undefined') {
-  try {
-    if (!localStorage.getItem(SCHEMA_VERSION_KEY)) {
-      localStorage.removeItem(LOCAL_PRODUCTS_KEY);
-      localStorage.removeItem(LOCAL_CATEGORIES_KEY);
-      localStorage.removeItem(LOCAL_HERO_SLIDES_KEY);
-      localStorage.removeItem(DELETED_PRODUCTS_KEY);
-      localStorage.removeItem(DELETED_CATEGORIES_KEY);
-      localStorage.removeItem(DELETED_HERO_SLIDES_KEY);
-      localStorage.removeItem('ash_jewellery_has_seeded');
-      localStorage.setItem(SCHEMA_VERSION_KEY, '3');
-    }
-  } catch (e) {
-    // ignore
-  }
-}
-
-// In-Memory Storage Cache (Guarantees zero data loss and prevents browser quota crashes)
-const memoryStorage = new Map<string, string>();
-
 function safeGetLocalStorage(key: string): string | null {
-  // Always check memory storage first for freshest, uncompressed user data
-  if (memoryStorage.has(key)) {
-    return memoryStorage.get(key) ?? null;
-  }
   try {
-    const val = localStorage.getItem(key);
-    if (val !== null) return val;
-    return null;
+    return localStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-function safeSetLocalStorage(key: string, value: string): boolean {
-  // Always update in-memory cache first so the app has 100% of user data intact
-  memoryStorage.set(key, value);
-
+function safeSetLocalStorage(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
-    return true;
-  } catch (err: any) {
-    // Quota reached or storage disabled: gracefully degrade without modifying or deleting any user data
-    return false;
+  } catch (e) {
+    console.warn('Failed to set localStorage key:', key, e);
   }
 }
 
 function getDeletedIds(key: string): Set<string> {
+  const raw = safeGetLocalStorage(key);
+  if (!raw) return new Set();
   try {
-    const raw = safeGetLocalStorage(key);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
   } catch {
     return new Set();
   }
 }
 
-function addDeletedId(key: string, id: string) {
+function addDeletedId(key: string, id: string): void {
   const set = getDeletedIds(key);
   set.add(id);
   safeSetLocalStorage(key, JSON.stringify(Array.from(set)));
 }
 
-function removeDeletedId(key: string, id: string) {
+function removeDeletedId(key: string, id: string): void {
   const set = getDeletedIds(key);
   set.delete(id);
   safeSetLocalStorage(key, JSON.stringify(Array.from(set)));
 }
 
-function getLocalProducts(): Product[] | null {
+export function getLocalProducts(): Product[] | null {
+  const raw = safeGetLocalStorage(LOCAL_PRODUCTS_KEY);
+  if (!raw) return null;
   try {
-    const raw = safeGetLocalStorage(LOCAL_PRODUCTS_KEY);
-    return raw ? JSON.parse(raw) : null;
+    return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-function saveLocalProducts(products: Product[]) {
+export function saveLocalProducts(products: Product[]): void {
   safeSetLocalStorage(LOCAL_PRODUCTS_KEY, JSON.stringify(products));
 }
 
-function getLocalCategories(): Category[] | null {
+export function getLocalCategories(): Category[] | null {
+  const raw = safeGetLocalStorage(LOCAL_CATEGORIES_KEY);
+  if (!raw) return null;
   try {
-    const raw = safeGetLocalStorage(LOCAL_CATEGORIES_KEY);
-    return raw ? JSON.parse(raw) : null;
+    return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-function saveLocalCategories(categories: Category[]) {
+export function saveLocalCategories(categories: Category[]): void {
   safeSetLocalStorage(LOCAL_CATEGORIES_KEY, JSON.stringify(categories));
 }
 
-function getLocalHeroSlides(): HeroSlide[] | null {
+export function getLocalHeroSlides(): HeroSlide[] | null {
+  const raw = safeGetLocalStorage(LOCAL_HERO_SLIDES_KEY);
+  if (!raw) return null;
   try {
-    const raw = safeGetLocalStorage(LOCAL_HERO_SLIDES_KEY);
-    return raw ? JSON.parse(raw) : null;
+    return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-function saveLocalHeroSlides(slides: HeroSlide[]) {
+export function saveLocalHeroSlides(slides: HeroSlide[]): void {
   safeSetLocalStorage(LOCAL_HERO_SLIDES_KEY, JSON.stringify(slides));
 }
 
-// Synchronous Instant Getters (0ms Load Time)
+export function getLocalOrders(): Order[] {
+  const raw = safeGetLocalStorage(LOCAL_ORDERS_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalOrder(order: Order): void {
+  const current = getLocalOrders();
+  const filtered = current.filter((o) => o.id !== order.id);
+  safeSetLocalStorage(LOCAL_ORDERS_KEY, JSON.stringify([order, ...filtered]));
+}
+
+export function getLocalInquiries(): CustomInquiry[] {
+  const raw = safeGetLocalStorage(LOCAL_INQUIRIES_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalInquiry(inquiry: CustomInquiry): void {
+  const current = getLocalInquiries();
+  const filtered = current.filter((i) => i.id !== inquiry.id);
+  safeSetLocalStorage(LOCAL_INQUIRIES_KEY, JSON.stringify([inquiry, ...filtered]));
+}
+
+// Instant cache helpers for zero-flash initial render
 export function getInstantInitialProducts(): Product[] {
   const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
-  const localProds = getLocalProducts();
-  const base = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
-  return base.filter((p) => !deletedIds.has(p.id));
+  const local = getLocalProducts();
+  if (local && local.length > 0) {
+    return local.filter((p) => !deletedIds.has(p.id));
+  }
+  return INITIAL_PRODUCTS.filter((p) => !deletedIds.has(p.id));
 }
 
 export function getInstantInitialCategories(): Category[] {
   const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
-  const localCats = getLocalCategories();
-  const base = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
-  return base.filter((c) => !deletedIds.has(c.id));
+  const local = getLocalCategories();
+  if (local && local.length > 0) {
+    return local.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
+  }
+  return INITIAL_CATEGORIES.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
 }
 
 export function getInstantInitialHeroSlides(): HeroSlide[] {
   const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
-  const localSlides = getLocalHeroSlides();
-  const base = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
-  return base.filter((s) => !deletedIds.has(s.id)).sort((a, b) => a.order - b.order);
+  const local = getLocalHeroSlides();
+  if (local && local.length > 0) {
+    return local.filter((s) => !deletedIds.has(s.id));
+  }
+  return INITIAL_HERO_SLIDES.filter((s) => !deletedIds.has(s.id));
 }
 
 export function getInstantInitialPaymentSettings(): PaymentSettings {
-  try {
-    const raw = safeGetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY);
-    return raw ? JSON.parse(raw) : INITIAL_PAYMENT_SETTINGS;
-  } catch {
-    return INITIAL_PAYMENT_SETTINGS;
+  const raw = safeGetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY);
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return INITIAL_PAYMENT_SETTINGS;
+    }
   }
+  return INITIAL_PAYMENT_SETTINGS;
 }
 
-function getLocalOrders(): Order[] {
-  try {
-    const raw = safeGetLocalStorage(LOCAL_ORDERS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveLocalOrder(order: Order) {
-  const existing = getLocalOrders();
-  const updated = [order, ...existing.filter((o) => o.id !== order.id)];
-  safeSetLocalStorage(LOCAL_ORDERS_KEY, JSON.stringify(updated));
-}
-
-function getLocalInquiries(): CustomInquiry[] {
-  try {
-    const raw = safeGetLocalStorage(LOCAL_INQUIRIES_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveLocalInquiry(inquiry: CustomInquiry) {
-  const existing = getLocalInquiries();
-  const updated = [inquiry, ...existing.filter((i) => i.id !== inquiry.id)];
-  safeSetLocalStorage(LOCAL_INQUIRIES_KEY, JSON.stringify(updated));
-}
-
-// Seed Initial Data (Non-blocking background sync)
-export async function seedDatabaseIfEmpty() {
-  const seeded = localStorage.getItem('ash_jewellery_has_seeded');
-  if (seeded) return;
-
-  try {
-    const [prodSnap, catSnap, slideSnap, paymentSnap] = await Promise.all([
-      getDocs(collection(db, 'products')),
-      getDocs(collection(db, 'categories')),
-      getDocs(collection(db, 'heroSlides')),
-      getDoc(doc(db, 'paymentSettings', 'default')),
-    ]);
-
-    const seedPromises: Promise<any>[] = [];
-
-    if (prodSnap.empty) {
-      console.log('Seeding initial products into Firestore...');
-      for (const prod of INITIAL_PRODUCTS) {
-        seedPromises.push(setDoc(doc(db, 'products', prod.id), cleanFirestoreData(prod)));
-      }
-    }
-
-    if (catSnap.empty) {
-      console.log('Seeding initial categories into Firestore...');
-      for (const cat of INITIAL_CATEGORIES) {
-        seedPromises.push(setDoc(doc(db, 'categories', cat.id), cleanFirestoreData(cat)));
-      }
-    }
-
-    if (slideSnap.empty) {
-      console.log('Seeding initial hero slides into Firestore...');
-      for (const slide of INITIAL_HERO_SLIDES) {
-        seedPromises.push(setDoc(doc(db, 'heroSlides', slide.id), cleanFirestoreData(slide)));
-      }
-    }
-
-    if (!paymentSnap.exists()) {
-      console.log('Seeding initial payment settings into Firestore...');
-      seedPromises.push(
-        setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
-          ...INITIAL_PAYMENT_SETTINGS,
-          updatedAt: Date.now(),
-        }))
-      );
-    }
-
-    if (seedPromises.length > 0) {
-      await Promise.all(seedPromises);
-    }
-    localStorage.setItem('ash_jewellery_has_seeded', 'true');
-  } catch (error) {
-    console.warn('Firestore seed skipped or unavailable:', error);
-  }
-}
-
-// Helper to clean objects of undefined properties for Firestore
-function cleanFirestoreData<T extends Record<string, any>>(obj: T): Record<string, any> {
+// Data Sanitization
+function cleanFirestoreData(data: Record<string, any>): Record<string, any> {
   const cleaned: Record<string, any> = {};
-  Object.entries(obj).forEach(([key, val]) => {
-    if (val !== undefined && val !== null) {
-      cleaned[key] = val;
-    } else if (val === '') {
-      cleaned[key] = '';
+  Object.keys(data).forEach((key) => {
+    if (data[key] !== undefined) {
+      cleaned[key] = data[key];
     }
   });
   return cleaned;
 }
 
-// Products
+// ==================== PRODUCTS ====================
+
 export async function fetchProducts(): Promise<Product[]> {
   const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
   const localProds = getLocalProducts();
@@ -375,50 +312,88 @@ export async function fetchProducts(): Promise<Product[]> {
     if (querySnapshot.empty) {
       prods = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
     } else {
-      prods = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Product));
+      prods = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Product));
     }
     const filtered = prods.filter((p) => !deletedIds.has(p.id));
     if (filtered.length > 0) {
       saveLocalProducts(filtered);
     }
+    notifySyncStatus(false);
     return filtered;
   } catch (error) {
     console.warn('Firestore fetchProducts unavailable, using fallback:', error);
+    notifySyncStatus(true);
     const fallback = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
-    const filtered = fallback.filter((p) => !deletedIds.has(p.id));
-    return filtered;
+    return fallback.filter((p) => !deletedIds.has(p.id));
   }
 }
 
 export function subscribeProducts(callback: (products: Product[]) => void): () => void {
-  try {
-    const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
-    return onSnapshot(
-      collection(db, 'products'),
-      (snapshot) => {
-        const prods = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() } as Product))
-          .filter((p) => !deletedIds.has(p.id));
-        if (prods.length > 0) {
-          saveLocalProducts(prods);
-          callback(prods);
-        } else if (snapshot.empty) {
-          const local = getLocalProducts();
-          if (local && local.length > 0) {
-            callback(local);
+  let unsub: (() => void) | null = null;
+  let retryCount = 0;
+  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  let isCancelled = false;
+
+  const startListening = () => {
+    if (isCancelled) return;
+    try {
+      const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
+      unsub = onSnapshot(
+        collection(db, 'products'),
+        (snapshot) => {
+          retryCount = 0;
+          notifySyncStatus(false);
+          const prods = snapshot.docs
+            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Product))
+            .filter((p) => !deletedIds.has(p.id));
+          if (prods.length > 0) {
+            saveLocalProducts(prods);
+            callback(prods);
+          } else if (snapshot.empty) {
+            const local = getLocalProducts();
+            callback(local && local.length > 0 ? local : INITIAL_PRODUCTS);
+          }
+        },
+        async (error) => {
+          console.warn('Realtime products subscription error:', error);
+          // 1. One-time fetch attempt as recovery path
+          try {
+            const recoveryDocs = await fetchProducts();
+            if (recoveryDocs && recoveryDocs.length > 0) {
+              callback(recoveryDocs);
+              notifySyncStatus(false);
+            }
+          } catch {
+            notifySyncStatus(true);
+          }
+
+          // 2. Exponential backoff retry for subscription
+          if (retryCount < 3 && !isCancelled) {
+            retryCount++;
+            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
+            console.info(`Retrying products subscription (attempt ${retryCount}) in ${delay}ms...`);
+            retryTimeout = setTimeout(() => {
+              if (unsub) unsub();
+              startListening();
+            }, delay);
           } else {
-            callback(INITIAL_PRODUCTS);
+            notifySyncStatus(true);
           }
         }
-      },
-      (error) => {
-        console.warn('Realtime products subscription notice:', error);
-      }
-    );
-  } catch (err) {
-    console.warn('Failed to attach realtime products subscription:', err);
-    return () => {};
-  }
+      );
+    } catch (err) {
+      console.warn('Failed to attach realtime products subscription:', err);
+      notifySyncStatus(true);
+    }
+  };
+
+  startListening();
+
+  return () => {
+    isCancelled = true;
+    if (retryTimeout) clearTimeout(retryTimeout);
+    if (unsub) unsub();
+  };
 }
 
 export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }): Promise<Product> {
@@ -427,7 +402,12 @@ export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }
     savedProduct = product as Product;
     removeDeletedId(DELETED_PRODUCTS_KEY, product.id);
     const docRef = doc(db, 'products', product.id);
-    await setDoc(docRef, cleanFirestoreData(savedProduct), { merge: true });
+    try {
+      await setDoc(docRef, cleanFirestoreData(savedProduct), { merge: true });
+    } catch (err: any) {
+      console.error('Firestore saveProduct update error:', err);
+      throw new Error(err?.message || 'Failed to update product in database');
+    }
   } else {
     const newDocRef = doc(collection(db, 'products'));
     savedProduct = {
@@ -435,7 +415,12 @@ export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }
       id: newDocRef.id,
       createdAt: Date.now(),
     };
-    await setDoc(newDocRef, cleanFirestoreData(savedProduct));
+    try {
+      await setDoc(newDocRef, cleanFirestoreData(savedProduct));
+    } catch (err: any) {
+      console.error('Firestore saveProduct create error:', err);
+      throw new Error(err?.message || 'Failed to create product in database');
+    }
   }
 
   const current = getLocalProducts() || INITIAL_PRODUCTS;
@@ -452,10 +437,16 @@ export async function removeProduct(id: string): Promise<void> {
   const updated = current.filter((p) => p.id !== id);
   saveLocalProducts(updated);
 
-  await deleteDoc(doc(db, 'products', id));
+  try {
+    await deleteDoc(doc(db, 'products', id));
+  } catch (err: any) {
+    console.error('Firestore removeProduct error:', err);
+    throw new Error(err?.message || 'Failed to delete product from database');
+  }
 }
 
-// Categories
+// ==================== CATEGORIES ====================
+
 export async function fetchCategories(): Promise<Category[]> {
   const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
   const localCats = getLocalCategories();
@@ -465,50 +456,85 @@ export async function fetchCategories(): Promise<Category[]> {
     if (querySnapshot.empty) {
       cats = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
     } else {
-      cats = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Category));
+      cats = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Category));
     }
     const filtered = cats.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
     if (filtered.length > 0) {
       saveLocalCategories(filtered);
     }
+    notifySyncStatus(false);
     return filtered;
   } catch (error) {
     console.warn('Error fetching categories, returning fallback:', error);
+    notifySyncStatus(true);
     const fallback = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
-    const filtered = fallback.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-    return filtered;
+    return fallback.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
   }
 }
 
 export function subscribeCategories(callback: (categories: Category[]) => void): () => void {
-  try {
-    const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
-    return onSnapshot(
-      collection(db, 'categories'),
-      (snapshot) => {
-        const cats = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() } as Category))
-          .filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-        if (cats.length > 0) {
-          saveLocalCategories(cats);
-          callback(cats);
-        } else if (snapshot.empty) {
-          const local = getLocalCategories();
-          if (local && local.length > 0) {
-            callback(local);
+  let unsub: (() => void) | null = null;
+  let retryCount = 0;
+  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  let isCancelled = false;
+
+  const startListening = () => {
+    if (isCancelled) return;
+    try {
+      const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
+      unsub = onSnapshot(
+        collection(db, 'categories'),
+        (snapshot) => {
+          retryCount = 0;
+          notifySyncStatus(false);
+          const cats = snapshot.docs
+            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Category))
+            .filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
+          if (cats.length > 0) {
+            saveLocalCategories(cats);
+            callback(cats);
+          } else if (snapshot.empty) {
+            const local = getLocalCategories();
+            callback(local && local.length > 0 ? local : INITIAL_CATEGORIES);
+          }
+        },
+        async (error) => {
+          console.warn('Realtime categories subscription error:', error);
+          try {
+            const recoveryDocs = await fetchCategories();
+            if (recoveryDocs && recoveryDocs.length > 0) {
+              callback(recoveryDocs);
+              notifySyncStatus(false);
+            }
+          } catch {
+            notifySyncStatus(true);
+          }
+
+          if (retryCount < 3 && !isCancelled) {
+            retryCount++;
+            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
+            retryTimeout = setTimeout(() => {
+              if (unsub) unsub();
+              startListening();
+            }, delay);
           } else {
-            callback(INITIAL_CATEGORIES);
+            notifySyncStatus(true);
           }
         }
-      },
-      (error) => {
-        console.warn('Realtime categories subscription notice:', error);
-      }
-    );
-  } catch (err) {
-    console.warn('Failed to attach realtime categories subscription:', err);
-    return () => {};
-  }
+      );
+    } catch (err) {
+      console.warn('Failed to attach realtime categories subscription:', err);
+      notifySyncStatus(true);
+    }
+  };
+
+  startListening();
+
+  return () => {
+    isCancelled = true;
+    if (retryTimeout) clearTimeout(retryTimeout);
+    if (unsub) unsub();
+  };
 }
 
 export async function saveCategory(category: { id?: string; name: string; image?: string }): Promise<Category> {
@@ -521,7 +547,12 @@ export async function saveCategory(category: { id?: string; name: string; image?
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.id);
   removeDeletedId(DELETED_CATEGORIES_KEY, newCat.name.toLowerCase());
 
-  await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat), { merge: true });
+  try {
+    await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat), { merge: true });
+  } catch (err: any) {
+    console.error('Firestore saveCategory error:', err);
+    throw new Error(err?.message || 'Failed to save category to database');
+  }
 
   const current = getLocalCategories() || INITIAL_CATEGORIES;
   const updated = [...current.filter((c) => c.id !== newCat.id && c.name.toLowerCase() !== newCat.name.toLowerCase()), newCat];
@@ -540,10 +571,16 @@ export async function removeCategory(id: string, name?: string): Promise<void> {
   const updated = current.filter((c) => c.id !== id && (!name || c.name.toLowerCase() !== name.toLowerCase()));
   saveLocalCategories(updated);
 
-  await deleteDoc(doc(db, 'categories', id));
+  try {
+    await deleteDoc(doc(db, 'categories', id));
+  } catch (err: any) {
+    console.error('Firestore removeCategory error:', err);
+    throw new Error(err?.message || 'Failed to delete category from database');
+  }
 }
 
-// Hero Slides
+// ==================== HERO SLIDES ====================
+
 export async function fetchHeroSlides(): Promise<HeroSlide[]> {
   const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
   const localSlides = getLocalHeroSlides();
@@ -554,52 +591,87 @@ export async function fetchHeroSlides(): Promise<HeroSlide[]> {
       slides = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
     } else {
       slides = querySnapshot.docs
-        .map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide))
+        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as HeroSlide))
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     }
     const filtered = slides.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     if (filtered.length > 0) {
       saveLocalHeroSlides(filtered);
     }
+    notifySyncStatus(false);
     return filtered;
   } catch (error) {
     console.warn('Error fetching hero slides, returning local or initial:', error);
+    notifySyncStatus(true);
     const fallback = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
-    const filtered = fallback.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    return filtered;
+    return fallback.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }
 }
 
 export function subscribeHeroSlides(callback: (slides: HeroSlide[]) => void): () => void {
-  try {
-    const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
-    return onSnapshot(
-      collection(db, 'heroSlides'),
-      (snapshot) => {
-        const slides = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() } as HeroSlide))
-          .filter((s) => !deletedIds.has(s.id))
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        if (slides.length > 0) {
-          saveLocalHeroSlides(slides);
-          callback(slides);
-        } else if (snapshot.empty) {
-          const local = getLocalHeroSlides();
-          if (local && local.length > 0) {
-            callback(local);
+  let unsub: (() => void) | null = null;
+  let retryCount = 0;
+  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  let isCancelled = false;
+
+  const startListening = () => {
+    if (isCancelled) return;
+    try {
+      const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
+      unsub = onSnapshot(
+        collection(db, 'heroSlides'),
+        (snapshot) => {
+          retryCount = 0;
+          notifySyncStatus(false);
+          const slides = snapshot.docs
+            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as HeroSlide))
+            .filter((s) => !deletedIds.has(s.id))
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          if (slides.length > 0) {
+            saveLocalHeroSlides(slides);
+            callback(slides);
+          } else if (snapshot.empty) {
+            const local = getLocalHeroSlides();
+            callback(local && local.length > 0 ? local : INITIAL_HERO_SLIDES);
+          }
+        },
+        async (error) => {
+          console.warn('Realtime hero slides subscription error:', error);
+          try {
+            const recoveryDocs = await fetchHeroSlides();
+            if (recoveryDocs && recoveryDocs.length > 0) {
+              callback(recoveryDocs);
+              notifySyncStatus(false);
+            }
+          } catch {
+            notifySyncStatus(true);
+          }
+
+          if (retryCount < 3 && !isCancelled) {
+            retryCount++;
+            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
+            retryTimeout = setTimeout(() => {
+              if (unsub) unsub();
+              startListening();
+            }, delay);
           } else {
-            callback(INITIAL_HERO_SLIDES);
+            notifySyncStatus(true);
           }
         }
-      },
-      (error) => {
-        console.warn('Realtime hero slides subscription notice:', error);
-      }
-    );
-  } catch (err) {
-    console.warn('Failed to attach realtime hero slides subscription:', err);
-    return () => {};
-  }
+      );
+    } catch (err) {
+      console.warn('Failed to attach realtime hero slides subscription:', err);
+      notifySyncStatus(true);
+    }
+  };
+
+  startListening();
+
+  return () => {
+    isCancelled = true;
+    if (retryTimeout) clearTimeout(retryTimeout);
+    if (unsub) unsub();
+  };
 }
 
 export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string }): Promise<HeroSlide> {
@@ -608,14 +680,24 @@ export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string
     savedSlide = slide as HeroSlide;
     removeDeletedId(DELETED_HERO_SLIDES_KEY, slide.id);
     const docRef = doc(db, 'heroSlides', slide.id);
-    await setDoc(docRef, cleanFirestoreData(slide), { merge: true });
+    try {
+      await setDoc(docRef, cleanFirestoreData(slide), { merge: true });
+    } catch (err: any) {
+      console.error('Firestore saveHeroSlide error:', err);
+      throw new Error(err?.message || 'Failed to update hero slide');
+    }
   } else {
     const newDocRef = doc(collection(db, 'heroSlides'));
     savedSlide = {
       ...slide,
       id: newDocRef.id,
     };
-    await setDoc(newDocRef, cleanFirestoreData(savedSlide));
+    try {
+      await setDoc(newDocRef, cleanFirestoreData(savedSlide));
+    } catch (err: any) {
+      console.error('Firestore saveHeroSlide error:', err);
+      throw new Error(err?.message || 'Failed to create hero slide');
+    }
   }
 
   const current = getLocalHeroSlides() || INITIAL_HERO_SLIDES;
@@ -634,10 +716,16 @@ export async function removeHeroSlide(id: string): Promise<void> {
   const updated = current.filter((s) => s.id !== id);
   saveLocalHeroSlides(updated);
 
-  await deleteDoc(doc(db, 'heroSlides', id));
+  try {
+    await deleteDoc(doc(db, 'heroSlides', id));
+  } catch (err: any) {
+    console.error('Firestore removeHeroSlide error:', err);
+    throw new Error(err?.message || 'Failed to delete hero slide');
+  }
 }
 
-// Orders
+// ==================== ORDERS ====================
+
 export async function createOrder(orderData: Omit<Order, 'id' | 'createdAt'>): Promise<Order> {
   const newDocRef = doc(collection(db, 'orders'));
   const newOrder: Order = {
@@ -647,91 +735,94 @@ export async function createOrder(orderData: Omit<Order, 'id' | 'createdAt'>): P
     createdAt: Date.now(),
   };
 
-  // Always save local backup
+  // Keep local backup for resilience
   saveLocalOrder(newOrder);
 
   try {
     await setDoc(newDocRef, cleanFirestoreData(newOrder));
-  } catch (error) {
-    console.warn('Firestore setDoc failed for order, saved locally as fallback:', error);
+  } catch (err: any) {
+    console.error('Firestore createOrder setDoc failed:', err);
+    throw new Error(err?.message || 'Failed to place order in database. Please try again.');
   }
+
   return newOrder;
 }
 
 export async function fetchAllOrders(): Promise<Order[]> {
-  const localOrders = getLocalOrders();
   try {
     const querySnapshot = await getDocs(collection(db, 'orders'));
-    const fsOrders = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Order));
-    
-    const orderMap = new Map<string, Order>();
-    localOrders.forEach(o => orderMap.set(o.id, o));
-    fsOrders.forEach(o => orderMap.set(o.id, o));
-    
-    const combined = Array.from(orderMap.values());
-    return combined.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const fsOrders = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Order));
+    // Firestore is single source of truth
+    return fsOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   } catch (error) {
-    console.warn('Error fetching all orders from Firestore, returning local orders:', error);
+    console.warn('Error fetching all orders from Firestore, using local fallback:', error);
+    const localOrders = getLocalOrders();
     return localOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }
 }
 
 export async function fetchCustomerOrders(userEmail: string): Promise<Order[]> {
-  const localOrders = getLocalOrders().filter(o => o.userEmail === userEmail);
   try {
     const q = query(collection(db, 'orders'), where('userEmail', '==', userEmail));
     const querySnapshot = await getDocs(q);
-    const fsOrders = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Order));
-    
-    const orderMap = new Map<string, Order>();
-    localOrders.forEach(o => orderMap.set(o.id, o));
-    fsOrders.forEach(o => orderMap.set(o.id, o));
-    
-    const combined = Array.from(orderMap.values());
-    return combined.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const fsOrders = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Order));
+    // Firestore is single source of truth
+    return fsOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   } catch (error) {
-    console.warn('Error fetching customer orders, returning local orders:', error);
+    console.warn('Error fetching customer orders, using local fallback:', error);
+    const localOrders = getLocalOrders().filter((o) => o.userEmail === userEmail);
     return localOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
   const localOrders = getLocalOrders();
-  const order = localOrders.find(o => o.id === orderId);
+  const order = localOrders.find((o) => o.id === orderId);
   if (order) {
     order.orderStatus = status;
     saveLocalOrder(order);
   }
+
   try {
     const docRef = doc(db, 'orders', orderId);
     await updateDoc(docRef, { orderStatus: status });
-  } catch (error) {
-    console.warn('Firestore updateOrderStatus failed:', error);
+  } catch (err: any) {
+    console.error('Firestore updateOrderStatus failed:', err);
+    throw new Error(err?.message || 'Failed to update order status');
   }
 }
 
 export async function updatePaymentVerification(orderId: string, status: PaymentStatus): Promise<void> {
   const localOrders = getLocalOrders();
-  const order = localOrders.find(o => o.id === orderId);
+  const order = localOrders.find((o) => o.id === orderId);
   if (order) {
     order.paymentStatus = status;
     saveLocalOrder(order);
   }
+
   try {
     const docRef = doc(db, 'orders', orderId);
     await updateDoc(docRef, { paymentStatus: status });
-  } catch (error) {
-    console.warn('Firestore updatePaymentVerification failed:', error);
+  } catch (err: any) {
+    console.error('Firestore updatePaymentVerification failed:', err);
+    throw new Error(err?.message || 'Failed to update payment status');
   }
 }
 
-// Custom Inquiries
-export async function createCustomInquiry(inquiryData: Omit<CustomInquiry, 'id' | 'createdAt' | 'status'>): Promise<CustomInquiry> {
+// ==================== CUSTOM INQUIRIES ====================
+
+export async function createCustomInquiry(
+  inquiryData: Omit<CustomInquiry, 'id' | 'createdAt' | 'status'>
+): Promise<CustomInquiry> {
   const newDocRef = doc(collection(db, 'customInquiries'));
-  const firstImage = inquiryData.referenceImageUrl || (inquiryData.referenceImages && inquiryData.referenceImages[0]) || '';
-  const imagesList = inquiryData.referenceImages && inquiryData.referenceImages.length > 0
-    ? inquiryData.referenceImages
-    : (firstImage ? [firstImage] : []);
+  const firstImage =
+    inquiryData.referenceImageUrl || (inquiryData.referenceImages && inquiryData.referenceImages[0]) || '';
+  const imagesList =
+    inquiryData.referenceImages && inquiryData.referenceImages.length > 0
+      ? inquiryData.referenceImages
+      : firstImage
+      ? [firstImage]
+      : [];
 
   const newInquiry: CustomInquiry = {
     ...inquiryData,
@@ -746,86 +837,134 @@ export async function createCustomInquiry(inquiryData: Omit<CustomInquiry, 'id' 
 
   try {
     await setDoc(newDocRef, cleanFirestoreData(newInquiry));
-  } catch (error) {
-    console.warn('Firestore setDoc failed for custom inquiry:', error);
+  } catch (err: any) {
+    console.error('Firestore createCustomInquiry setDoc failed:', err);
+    throw new Error(err?.message || 'Failed to submit custom inquiry');
   }
+
   return newInquiry;
 }
 
 export async function fetchCustomInquiries(): Promise<CustomInquiry[]> {
-  const localInquiries = getLocalInquiries();
   try {
     const querySnapshot = await getDocs(collection(db, 'customInquiries'));
-    const fsInquiries = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as CustomInquiry));
-    
-    const inqMap = new Map<string, CustomInquiry>();
-    localInquiries.forEach(i => inqMap.set(i.id, i));
-    fsInquiries.forEach(i => inqMap.set(i.id, i));
-    
-    const combined = Array.from(inqMap.values());
-    return combined.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const fsInquiries = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as CustomInquiry));
+    return fsInquiries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   } catch (error) {
-    console.warn('Error fetching custom inquiries:', error);
+    console.warn('Error fetching custom inquiries from Firestore, using local fallback:', error);
+    const localInquiries = getLocalInquiries();
     return localInquiries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }
 }
 
 export async function updateInquiryStatus(inquiryId: string, status: InquiryStatus): Promise<void> {
   const localInquiries = getLocalInquiries();
-  const inq = localInquiries.find(i => i.id === inquiryId);
+  const inq = localInquiries.find((i) => i.id === inquiryId);
   if (inq) {
     inq.status = status;
     saveLocalInquiry(inq);
   }
+
   try {
     const docRef = doc(db, 'customInquiries', inquiryId);
     await updateDoc(docRef, { status });
-  } catch (error) {
-    console.warn('Firestore updateInquiryStatus failed:', error);
+  } catch (err: any) {
+    console.error('Firestore updateInquiryStatus failed:', err);
+    throw new Error(err?.message || 'Failed to update inquiry status');
   }
 }
 
-// Payment Settings
+// ==================== PAYMENT SETTINGS ====================
+
 export async function fetchPaymentSettings(): Promise<PaymentSettings> {
   try {
     const docSnap = await getDoc(doc(db, 'paymentSettings', 'default'));
     if (docSnap.exists()) {
       const data = docSnap.data() as PaymentSettings;
       safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
+      notifySyncStatus(false);
       return data;
     }
     return getInstantInitialPaymentSettings();
   } catch (error) {
     console.warn('Error fetching payment settings, using local or initial:', error);
+    notifySyncStatus(true);
     return getInstantInitialPaymentSettings();
   }
 }
 
 export function subscribePaymentSettings(callback: (settings: PaymentSettings) => void): () => void {
-  try {
-    return onSnapshot(
-      doc(db, 'paymentSettings', 'default'),
-      (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data() as PaymentSettings;
-          safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
-          callback(data);
+  let unsub: (() => void) | null = null;
+  let retryCount = 0;
+  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  let isCancelled = false;
+
+  const startListening = () => {
+    if (isCancelled) return;
+    try {
+      unsub = onSnapshot(
+        doc(db, 'paymentSettings', 'default'),
+        (snapshot) => {
+          retryCount = 0;
+          notifySyncStatus(false);
+          if (snapshot.exists()) {
+            const data = snapshot.data() as PaymentSettings;
+            safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
+            callback(data);
+          }
+        },
+        async (error) => {
+          console.warn('Realtime payment settings subscription notice:', error);
+          try {
+            const recoverySettings = await fetchPaymentSettings();
+            if (recoverySettings) {
+              callback(recoverySettings);
+              notifySyncStatus(false);
+            }
+          } catch {
+            notifySyncStatus(true);
+          }
+
+          if (retryCount < 3 && !isCancelled) {
+            retryCount++;
+            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
+            retryTimeout = setTimeout(() => {
+              if (unsub) unsub();
+              startListening();
+            }, delay);
+          } else {
+            notifySyncStatus(true);
+          }
         }
-      },
-      (error) => {
-        console.warn('Realtime payment settings subscription notice:', error);
-      }
-    );
-  } catch (err) {
-    console.warn('Failed to attach realtime payment settings subscription:', err);
-    return () => {};
-  }
+      );
+    } catch (err) {
+      console.warn('Failed to attach realtime payment settings subscription:', err);
+      notifySyncStatus(true);
+    }
+  };
+
+  startListening();
+
+  return () => {
+    isCancelled = true;
+    if (retryTimeout) clearTimeout(retryTimeout);
+    if (unsub) unsub();
+  };
 }
 
 export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
   safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
-  await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
-    ...settings,
-    updatedAt: Date.now(),
-  }));
+  try {
+    await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
+      ...settings,
+      updatedAt: Date.now(),
+    }));
+  } catch (err: any) {
+    console.error('Firestore savePaymentSettings failed:', err);
+    throw new Error(err?.message || 'Failed to save payment settings to database');
+  }
+}
+
+export async function seedDatabaseIfEmpty(): Promise<void> {
+  // Safe helper if manual seeding is needed
 }
