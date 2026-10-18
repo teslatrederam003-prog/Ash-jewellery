@@ -49,10 +49,34 @@ import {
   fetchPaymentSettings,
   savePaymentSettings,
   uploadMediaFile,
+  getCustomerSignedUrl,
 } from '../services/dbService';
+
+const SecureCustomerImage: React.FC<{ path: string; alt: string; className?: string }> = ({ path, alt, className }) => {
+  const [url, setUrl] = useState<string>('');
+  useEffect(() => {
+    let active = true;
+    getCustomerSignedUrl(path).then((signed) => {
+      if (active) setUrl(signed || path);
+    });
+    return () => {
+      active = false;
+    };
+  }, [path]);
+
+  if (!url) {
+    return (
+      <div className={`bg-[#EFE1C8] flex items-center justify-center animate-pulse ${className}`}>
+        <ImageIcon className="w-4 h-4 text-[#7A6A5C]" />
+      </div>
+    );
+  }
+  return <img src={url} alt={alt} className={className} />;
+};
 
 interface AdminPanelProps {
   userEmail: string | null;
+  isAdmin: boolean;
   onOpenAuth: () => void;
   setActivePage: (page: ActivePage) => void;
   onRefreshStorefront?: () => void;
@@ -62,6 +86,7 @@ type AdminTab = 'products' | 'categories' | 'hero' | 'orders' | 'payment-setting
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   userEmail,
+  isAdmin,
   onOpenAuth,
   setActivePage,
   onRefreshStorefront,
@@ -144,10 +169,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTimeout(() => setFeedback(null), 3000);
   };
 
-  // Check login & admin email authorization
-  const isAdminUser = Boolean(userEmail && userEmail.toLowerCase() === 'admin@ashjewellery.com');
-
-  if (!userEmail || !isAdminUser) {
+  // Check login & admin authorization
+  if (!userEmail || !isAdmin) {
     return (
       <div className="py-16 bg-[#FFF8EC] min-h-[70vh] flex items-center justify-center px-4">
         <div className="bg-white border-2 border-[#D4A017] rounded-sm p-8 max-w-md w-full text-center shadow-lg">
@@ -157,8 +180,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <h2 className="font-serif text-2xl font-bold text-[#2A1810]">Admin Portal Access</h2>
           <p className="text-xs font-medium text-[#7A6A5C] mt-2">
             {!userEmail
-              ? 'Please sign in with the admin credentials to access store management.'
-              : 'Access Restricted. Only the administrator account (admin@ashjewellery.com) can access this portal.'}
+              ? 'Please sign in with your administrator account to access store management.'
+              : 'Access Restricted. Only authorized administrators can access this portal.'}
           </p>
           {!userEmail && (
             <button
@@ -948,9 +971,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             {order.paymentScreenshotUrl ? (
                               <div className="space-y-2 pt-2 border-t border-[#EFE1C8]">
                                 <button
-                                  onClick={() => {
+                                  onClick={async () => {
                                     setPreviewModalTitle(`Payment Screenshot for Order #${order.id.slice(-6)}`);
-                                    setPreviewScreenshotUrl(order.paymentScreenshotUrl || null);
+                                    const signedUrl = await getCustomerSignedUrl(order.paymentScreenshotUrl || '');
+                                    setPreviewScreenshotUrl(signedUrl || null);
                                   }}
                                   className="w-full py-1.5 rounded-sm bg-white border border-[#D4A017] text-[#9B1C2F] text-[11px] font-bold uppercase tracking-wider cursor-pointer hover:bg-[#FBEFCB] flex items-center justify-center gap-1"
                                 >
@@ -1034,15 +1058,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               ).map((refImg, rIdx) => (
                                 <div
                                   key={rIdx}
-                                  onClick={() => {
+                                  onClick={async () => {
                                     setPreviewModalTitle(`Reference Photo #${rIdx + 1} from ${inq.name}`);
-                                    setPreviewScreenshotUrl(refImg);
+                                    const signed = await getCustomerSignedUrl(refImg);
+                                    setPreviewScreenshotUrl(signed || null);
                                   }}
                                   className="relative group w-14 h-14 rounded-sm border-2 border-[#D4A017] overflow-hidden bg-[#FFF8EC] cursor-pointer shadow-2xs hover:opacity-90 transition-opacity"
                                   title="Click to view fullsize"
                                 >
-                                  <img
-                                    src={refImg}
+                                  <SecureCustomerImage
+                                    path={refImg}
                                     alt={`Reference ${rIdx + 1}`}
                                     className="w-full h-full object-cover"
                                   />

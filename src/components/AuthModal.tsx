@@ -1,13 +1,6 @@
 import React, { useState } from 'react';
-import { X, Lock, Mail, User, Phone, AlertCircle } from 'lucide-react';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-  GoogleAuthProvider,
-  signInWithPopup,
-} from 'firebase/auth';
-import { auth } from '../lib/firebase';
+import { X, Lock, Mail, User, Phone, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -31,14 +24,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   const handleLoginSuccess = (userEmail: string, userUid?: string) => {
     const cleanEmail = userEmail.trim().toLowerCase();
-    const finalUid = userUid || 'user_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
-    try {
-      localStorage.setItem('ash_jewellery_local_user_email', cleanEmail);
-      localStorage.setItem('ash_jewellery_local_user_id', finalUid);
-    } catch (e) {
-      console.warn('Storage saving failed:', e);
-    }
-    onSuccess(cleanEmail, finalUid);
+    onSuccess(cleanEmail, userUid);
     onClose();
   };
 
@@ -46,16 +32,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     try {
       setLoading(true);
       setErrorMsg(null);
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      handleLoginSuccess(result.user.email || 'Google User', result.user.uid);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
     } catch (err: any) {
       console.error('Google auth error:', err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        setErrorMsg('Sign-in popup was closed.');
-      } else {
-        setErrorMsg(err?.message || 'Google sign-in failed.');
-      }
+      setErrorMsg(err?.message || 'Google sign-in failed.');
     } finally {
       setLoading(false);
     }
@@ -73,69 +59,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // Special handler for Admin Credentials
-    if (cleanEmail === 'admin@ashjewellery.com' && password === 'admin123') {
-      try {
-        setLoading(true);
-        // Attempt Firebase auth
-        const userCred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-        handleLoginSuccess(userCred.user.email || cleanEmail, userCred.user.uid);
-        return;
-      } catch (err) {
-        // Fallback for admin user if Firebase password auth is restricted
-        console.warn('Firebase admin sign-in fallback activated');
-        handleLoginSuccess('admin@ashjewellery.com', 'admin-ash-root');
-        return;
-      } finally {
-        setLoading(false);
-      }
-    }
-
     try {
       setLoading(true);
       if (isSignUp) {
-        // Sign up
-        try {
-          const userCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-          handleLoginSuccess(userCred.user.email || cleanEmail, userCred.user.uid);
-        } catch (fbErr: any) {
-          if (fbErr.code === 'auth/operation-not-allowed') {
-            console.warn('Firebase email/password disabled, activating fallback authentication');
-            handleLoginSuccess(cleanEmail);
-            return;
-          }
-          throw fbErr;
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: {
+              name,
+              phone,
+            },
+          },
+        });
+        if (error) throw error;
+
+        if (data.user) {
+          handleLoginSuccess(data.user.email || cleanEmail, data.user.id);
+        } else {
+          setErrorMsg('Account created. Please check your email to confirm registration.');
         }
       } else {
-        // Sign in
-        try {
-          const userCred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-          handleLoginSuccess(userCred.user.email || cleanEmail, userCred.user.uid);
-        } catch (fbErr: any) {
-          if (fbErr.code === 'auth/operation-not-allowed') {
-            console.warn('Firebase email/password disabled, activating fallback authentication');
-            handleLoginSuccess(cleanEmail);
-            return;
-          }
-          throw fbErr;
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+        if (error) throw error;
+
+        if (data.user) {
+          handleLoginSuccess(data.user.email || cleanEmail, data.user.id);
         }
       }
     } catch (err: any) {
-      console.error('Firebase auth error:', err);
+      console.error('Supabase auth error:', err);
       let friendly = 'Authentication failed. Please check your credentials.';
 
-      if (err.code === 'auth/operation-not-allowed') {
-        handleLoginSuccess(cleanEmail);
-        return;
-      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
-        friendly = 'Incorrect email or password.';
-      } else if (err.code === 'auth/user-not-found') {
-        friendly = 'No account found with this email.';
-      } else if (err.code === 'auth/email-already-in-use') {
-        friendly = 'An account with this email already exists. Try logging in.';
-      } else if (err.code === 'auth/weak-password') {
-        friendly = 'Password should be at least 6 characters.';
-      } else if (err.message) {
+      if (err.message) {
         friendly = err.message;
       }
       setErrorMsg(friendly);
@@ -151,15 +110,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
     try {
       setLoading(true);
-      await sendPasswordResetEmail(auth, email);
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+        redirectTo: window.location.origin,
+      });
+      if (error) throw error;
       setResetSent(true);
       setErrorMsg(null);
     } catch (err: any) {
-      if (err.code === 'auth/operation-not-allowed') {
-        setErrorMsg('Email auth provider is not enabled in Firebase Console.');
-      } else {
-        setErrorMsg(err?.message || 'Failed to send password reset email.');
-      }
+      setErrorMsg(err?.message || 'Failed to send password reset email.');
     } finally {
       setLoading(false);
     }
@@ -201,82 +159,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           </div>
         )}
 
-        {/* Success message */}
+        {/* Password Reset Notice */}
         {resetSent && (
-          <div className="mb-4 p-3 rounded-sm bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold text-center uppercase tracking-wider">
-            Password reset email sent! Check your inbox.
+          <div className="mb-4 p-3 rounded-sm bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Password reset email sent! Check your inbox.</span>
           </div>
         )}
 
-        {/* Google Sign In Button */}
-        <div className="mb-4">
-          <button
-            type="button"
-            onClick={handleGoogleSignIn}
-            disabled={loading}
-            className="w-full py-3 min-h-[44px] px-4 rounded-sm border-2 border-[#EFE1C8] bg-white hover:bg-[#FFF8EC] text-[#2A1810] font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-xs"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-              />
-            </svg>
-            <span>Continue with Google</span>
-          </button>
-        </div>
-
-        <div className="relative my-4 text-center">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-[#EFE1C8]"></div>
-          </div>
-          <span className="relative px-2 bg-white text-[10px] uppercase font-bold text-[#7A6A5C] tracking-wider">
-            Or with Email
-          </span>
-        </div>
-
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="space-y-4">
+          
           {isSignUp && (
             <>
               <div>
-                <label className="block font-bold uppercase tracking-wider text-[#2A1810] mb-1">Full Name</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#2A1810] mb-1">
+                  Full Name
+                </label>
                 <div className="relative">
-                  <User className="w-4 h-4 text-[#7A6A5C] absolute left-3 top-3.5" />
+                  <User className="w-4 h-4 text-[#7A6A5C] absolute left-3.5 top-3.5" />
                   <input
                     type="text"
-                    required
-                    placeholder="e.g. Priya Sharma"
+                    required={isSignUp}
+                    placeholder="e.g. Ananya Roy"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    className="w-full pl-9 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
+                    className="w-full pl-10 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block font-bold uppercase tracking-wider text-[#2A1810] mb-1">Phone Number</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#2A1810] mb-1">
+                  Phone Number
+                </label>
                 <div className="relative">
-                  <Phone className="w-4 h-4 text-[#7A6A5C] absolute left-3 top-3.5" />
+                  <Phone className="w-4 h-4 text-[#7A6A5C] absolute left-3.5 top-3.5" />
                   <input
                     type="tel"
-                    required
-                    placeholder="+91 82088 10579"
+                    placeholder="e.g. +91 82088 10579"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    className="w-full pl-9 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
+                    className="w-full pl-10 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
                   />
                 </div>
               </div>
@@ -284,42 +208,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           )}
 
           <div>
-            <label className="block font-bold uppercase tracking-wider text-[#2A1810] mb-1">Email Address</label>
+            <label className="block text-xs font-bold uppercase tracking-wider text-[#2A1810] mb-1">
+              Email Address *
+            </label>
             <div className="relative">
-              <Mail className="w-4 h-4 text-[#7A6A5C] absolute left-3 top-3.5" />
+              <Mail className="w-4 h-4 text-[#7A6A5C] absolute left-3.5 top-3.5" />
               <input
                 type="email"
                 required
-                placeholder="you@example.com"
+                placeholder="name@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full pl-9 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
+                className="w-full pl-10 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
               />
             </div>
           </div>
 
           <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="block font-bold uppercase tracking-wider text-[#2A1810]">Password</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-[#2A1810]">
+                Password *
+              </label>
               {!isSignUp && (
                 <button
                   type="button"
                   onClick={handleForgotPassword}
-                  className="text-[11px] font-bold text-[#9B1C2F] hover:underline cursor-pointer py-1"
+                  className="text-[11px] font-bold text-[#9B1C2F] hover:underline cursor-pointer"
                 >
                   Forgot password?
                 </button>
               )}
             </div>
             <div className="relative">
-              <Lock className="w-4 h-4 text-[#7A6A5C] absolute left-3 top-3.5" />
+              <Lock className="w-4 h-4 text-[#7A6A5C] absolute left-3.5 top-3.5" />
               <input
                 type="password"
                 required
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-9 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
+                className="w-full pl-10 pr-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
               />
             </div>
           </div>
@@ -327,34 +255,81 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           <button
             type="submit"
             disabled={loading}
-            className={`w-full py-3.5 min-h-[48px] rounded-sm bg-[#9B1C2F] hover:bg-[#7A1522] text-white font-bold uppercase tracking-wider border-b-2 border-[#D4A017] shadow-sm transition-colors cursor-pointer flex items-center justify-center gap-2 ${
-              loading ? 'opacity-70 cursor-wait' : ''
-            }`}
+            className="w-full py-3.5 rounded-sm bg-[#9B1C2F] text-white font-bold text-xs uppercase tracking-wider border-2 border-[#D4A017] shadow-md hover:bg-[#7D1626] transition-colors cursor-pointer disabled:opacity-50 min-h-[44px] mt-2"
           >
-            {loading ? (
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : isSignUp ? (
-              'Create Account'
-            ) : (
-              'Sign In'
-            )}
+            {loading ? 'Please wait...' : isSignUp ? 'Create My Account' : 'Sign In'}
           </button>
         </form>
 
-        {/* Footer toggle */}
-        <div className="mt-6 pt-4 border-t border-[#EFE1C8] text-center space-y-2 text-xs">
-          <p className="text-[#7A6A5C]">
-            {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
-            <button
-              onClick={() => {
-                setIsSignUp(!isSignUp);
-                setErrorMsg(null);
-              }}
-              className="font-bold text-[#9B1C2F] hover:underline cursor-pointer"
-            >
-              {isSignUp ? 'Sign In' : 'Sign Up'}
-            </button>
-          </p>
+        {/* Divider */}
+        <div className="relative my-6 text-center">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-[#EFE1C8]"></div>
+          </div>
+          <span className="relative px-3 bg-white text-[11px] font-bold uppercase tracking-wider text-[#7A6A5C]">
+            Or continue with
+          </span>
+        </div>
+
+        {/* Google Sign In */}
+        <button
+          type="button"
+          onClick={handleGoogleSignIn}
+          disabled={loading}
+          className="w-full py-3 px-4 rounded-sm border-2 border-[#EFE1C8] bg-white text-[#2A1810] font-bold text-xs uppercase tracking-wider hover:bg-[#FFF8EC] hover:border-[#D4A017] transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-2xs min-h-[44px]"
+        >
+          <svg className="w-4 h-4" viewBox="0 0 24 24">
+            <path
+              fill="#4285F4"
+              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+            />
+            <path
+              fill="#34A853"
+              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+            />
+            <path
+              fill="#FBBC05"
+              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+            />
+            <path
+              fill="#EA4335"
+              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+            />
+          </svg>
+          <span>Continue with Google</span>
+        </button>
+
+        {/* Toggle sign in / sign up */}
+        <div className="mt-5 text-center text-xs text-[#7A6A5C] font-medium border-t border-[#EFE1C8] pt-4">
+          {isSignUp ? (
+            <p>
+              Already have an account?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSignUp(false);
+                  setErrorMsg(null);
+                }}
+                className="font-bold text-[#9B1C2F] hover:underline cursor-pointer ml-1"
+              >
+                Sign In here
+              </button>
+            </p>
+          ) : (
+            <p>
+              Don't have an account?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSignUp(true);
+                  setErrorMsg(null);
+                }}
+                className="font-bold text-[#9B1C2F] hover:underline cursor-pointer ml-1"
+              >
+                Create one now
+              </button>
+            </p>
+          )}
         </div>
 
       </div>

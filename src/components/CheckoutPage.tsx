@@ -22,35 +22,13 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   onOpenAuth,
   setActivePage,
 }) => {
-  // If not logged in, prompt user to login
-  if (!userEmail) {
-    return (
-      <div className="py-16 bg-[#FFF8EC] min-h-[70vh] flex items-center justify-center px-4">
-        <div className="bg-white border-2 border-[#D4A017] rounded-sm p-8 max-w-md w-full text-center shadow-lg">
-          <div className="w-16 h-16 rounded-full bg-[#FBEFCB] text-[#9B1C2F] flex items-center justify-center mx-auto mb-4 border-2 border-[#D4A017]">
-            <Lock className="w-8 h-8" />
-          </div>
-          <h2 className="font-serif text-2xl font-bold text-[#2A1810]">Sign In Required</h2>
-          <p className="text-xs text-[#7A6A5C] mt-2 leading-relaxed">
-            Please log in or create an account to complete your jewellery order and track your shipping status.
-          </p>
-          <button
-            onClick={onOpenAuth}
-            className="mt-6 w-full py-3.5 rounded-sm bg-[#9B1C2F] hover:bg-[#7A1522] text-white font-bold text-xs uppercase tracking-wider border-b-2 border-[#D4A017] shadow-sm cursor-pointer transition-colors"
-          >
-            Sign In or Register Now
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   const subtotal = cart.reduce((acc, item) => acc + item.product.price * item.quantity, 0);
   const shippingFee = subtotal >= 999 ? 0 : 99;
   const totalAmount = subtotal + shippingFee;
 
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [guestEmail, setGuestEmail] = useState('');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [pincode, setPincode] = useState('');
@@ -80,6 +58,12 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       return;
     }
 
+    const finalEmail = (userEmail || guestEmail || '').trim().toLowerCase();
+    if (!finalEmail) {
+      setErrorMessage('Please provide your email address for order confirmation.');
+      return;
+    }
+
     if (paymentMethod === 'Online (QR Code)' && !screenshotFile) {
       setErrorMessage('Please upload your payment confirmation screenshot before placing the order.');
       return;
@@ -94,8 +78,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
       }
 
       const orderData = {
-        userId: userId || 'anonymous',
-        userEmail: userEmail,
+        userId: userId || '',
+        userEmail: finalEmail,
         customerName,
         customerPhone,
         address,
@@ -188,13 +172,26 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
                 </div>
 
                 <div className="sm:col-span-2">
-                  <label className="block font-bold uppercase tracking-wider text-[#2A1810] mb-1">Email Address</label>
-                  <input
-                    type="email"
-                    disabled
-                    value={userEmail || ''}
-                    className="w-full px-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-gray-100 text-[#7A6A5C] cursor-not-allowed text-xs font-medium"
-                  />
+                  <label className="block font-bold uppercase tracking-wider text-[#2A1810] mb-1">
+                    Email Address *
+                  </label>
+                  {userEmail ? (
+                    <input
+                      type="email"
+                      disabled
+                      value={userEmail}
+                      className="w-full px-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-gray-100 text-[#7A6A5C] cursor-not-allowed text-xs font-medium"
+                    />
+                  ) : (
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g. priya@example.com"
+                      value={guestEmail}
+                      onChange={(e) => setGuestEmail(e.target.value)}
+                      className="w-full px-3.5 py-3 min-h-[44px] rounded-sm border-2 border-[#EFE1C8] bg-white focus:outline-hidden focus:border-[#D4A017] text-xs font-medium text-[#2A1810]"
+                    />
+                  )}
                 </div>
 
                 <div className="sm:col-span-2">

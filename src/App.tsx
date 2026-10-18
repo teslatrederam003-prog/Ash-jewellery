@@ -1,7 +1,6 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { AlertCircle } from 'lucide-react';
-import { auth } from './lib/firebase';
+import { AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
+import { supabase } from './lib/supabase';
 import {
   Product,
   Category,
@@ -16,15 +15,7 @@ import {
   fetchCategories,
   fetchHeroSlides,
   fetchPaymentSettings,
-  subscribeProducts,
-  subscribeCategories,
-  subscribeHeroSlides,
-  subscribePaymentSettings,
-  subscribeSyncStatus,
-  getInstantInitialProducts,
-  getInstantInitialCategories,
-  getInstantInitialHeroSlides,
-  getInstantInitialPaymentSettings,
+  checkIsAdmin,
 } from './services/dbService';
 
 // Eagerly loaded components for instant homepage render
@@ -59,33 +50,24 @@ function PageLoadingFallback() {
 export default function App() {
   const [activePage, setActivePage] = useState<ActivePage>('home');
 
-  // Auth state - initialized immediately from persistent storage so refresh keeps login active
-  const [userEmail, setUserEmail] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('ash_jewellery_local_user_email') || null;
-    } catch {
-      return null;
-    }
-  });
-  const [userId, setUserId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('ash_jewellery_local_user_id') || null;
-    } catch {
-      return null;
-    }
-  });
+  // Auth & Admin state - evaluated dynamically via Supabase Auth & is_admin RPC
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
-  const isAdmin = Boolean(userEmail && userEmail.toLowerCase() === 'admin@ashjewellery.com');
+  // Catalog Data States - initialized empty (NO hardcoded placeholder/demo data)
+  const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>([]);
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>({
+    upiId: '',
+    upiQrCodeUrl: '',
+    updatedAt: 0,
+  });
 
-  // Firestore Data State - Instant 0-second cache-first initial render
-  const [products, setProducts] = useState<Product[]>(() => getInstantInitialProducts());
-  const [categories, setCategories] = useState<Category[]>(() => getInstantInitialCategories());
-  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(() => getInstantInitialHeroSlides());
-  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getInstantInitialPaymentSettings());
-
-  // Real-time synchronization status banner
-  const [isSyncDegraded, setIsSyncDegraded] = useState(false);
+  const [loadingCatalog, setLoadingCatalog] = useState(true);
+  const [catalogError, setCatalogError] = useState(false);
 
   // Selected Category filter for Shop page
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -93,7 +75,7 @@ export default function App() {
   // Selected Product for quick view / detail modal
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
-  // Cart State - persisted in localStorage
+  // Cart State - persisted ONLY in localStorage
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
       const saved = localStorage.getItem('ash_jewellery_cart');
@@ -115,54 +97,50 @@ export default function App() {
     }
   }, [cart]);
 
-  // Firebase Auth State Listener
+  // Supabase Auth State & Admin Resolution
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setUserEmail(user.email);
-        setUserId(user.uid);
-        try {
-          localStorage.setItem('ash_jewellery_local_user_email', user.email || '');
-          localStorage.setItem('ash_jewellery_local_user_id', user.uid);
-        } catch {
-          // ignore
+    const syncUserAndAdmin = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setUserEmail(session.user.email || null);
+          setUserId(session.user.id || null);
+          const isAdm = await checkIsAdmin();
+          setIsAdmin(isAdm);
+        } else {
+          setUserEmail(null);
+          setUserId(null);
+          setIsAdmin(false);
         }
+      } catch (err) {
+        console.warn('Auth sync error:', err);
       }
-    });
-    return () => unsubscribe();
-  }, []);
+    };
 
-  // Listen to Firestore connection degradation
-  useEffect(() => {
-    return subscribeSyncStatus((degraded) => {
-      setIsSyncDegraded(degraded);
-    });
-  }, []);
+    syncUserAndAdmin();
 
-  // Realtime Live Data Synchronization
-  useEffect(() => {
-    const unsubProds = subscribeProducts((prods) => {
-      if (prods && prods.length > 0) setProducts(prods);
-    });
-    const unsubCats = subscribeCategories((cats) => {
-      if (cats && cats.length > 0) setCategories(cats);
-    });
-    const unsubSlides = subscribeHeroSlides((slides) => {
-      if (slides && slides.length > 0) setHeroSlides(slides);
-    });
-    const unsubPay = subscribePaymentSettings((pay) => {
-      if (pay) setPaymentSettings(pay);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (session?.user) {
+        setUserEmail(session.user.email || null);
+        setUserId(session.user.id || null);
+        const isAdm = await checkIsAdmin();
+        setIsAdmin(isAdm);
+      } else {
+        setUserEmail(null);
+        setUserId(null);
+        setIsAdmin(false);
+      }
     });
 
     return () => {
-      unsubProds();
-      unsubCats();
-      unsubSlides();
-      unsubPay();
+      subscription.unsubscribe();
     };
   }, []);
 
-  const refreshStorefront = async () => {
+  // Single one-time catalog fetch on page load + Supabase Realtime synchronization
+  const loadCatalog = async () => {
+    setLoadingCatalog(true);
+    setCatalogError(false);
     try {
       const [pList, cList, hList, paySet] = await Promise.all([
         fetchProducts(),
@@ -170,14 +148,62 @@ export default function App() {
         fetchHeroSlides(),
         fetchPaymentSettings(),
       ]);
-      if (pList && pList.length > 0) setProducts(pList);
-      if (cList && cList.length > 0) setCategories(cList);
-      if (hList && hList.length > 0) setHeroSlides(hList);
-      if (paySet) setPaymentSettings(paySet);
-    } catch (e) {
-      console.warn('Manual refresh notice:', e);
+      setProducts(pList);
+      setCategories(cList);
+      setHeroSlides(hList);
+      setPaymentSettings(paySet);
+    } catch (err) {
+      console.error('Failed to load collection:', err);
+      setCatalogError(true);
+    } finally {
+      setLoadingCatalog(false);
     }
   };
+
+  useEffect(() => {
+    loadCatalog();
+
+    // Subscribe to Supabase Realtime changes for catalog tables
+    const channel = supabase
+      .channel('catalog-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async () => {
+        try {
+          const prods = await fetchProducts();
+          setProducts(prods);
+        } catch (e) {
+          console.warn('Realtime product refresh error:', e);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, async () => {
+        try {
+          const cats = await fetchCategories();
+          setCategories(cats);
+        } catch (e) {
+          console.warn('Realtime category refresh error:', e);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hero_slides' }, async () => {
+        try {
+          const slides = await fetchHeroSlides();
+          setHeroSlides(slides);
+        } catch (e) {
+          console.warn('Realtime slide refresh error:', e);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_settings' }, async () => {
+        try {
+          const pay = await fetchPaymentSettings();
+          setPaymentSettings(pay);
+        } catch (e) {
+          console.warn('Realtime payment settings refresh error:', e);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   // Cart Handlers
   const handleAddToCart = (product: Product, quantity: number = 1, e?: React.MouseEvent) => {
@@ -225,18 +251,13 @@ export default function App() {
 
   const handleSignOut = async () => {
     try {
-      await signOut(auth);
-    } catch {
-      // ignore
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Sign out error:', err);
     }
     setUserEmail(null);
     setUserId(null);
-    try {
-      localStorage.removeItem('ash_jewellery_local_user_email');
-      localStorage.removeItem('ash_jewellery_local_user_id');
-    } catch {
-      // ignore
-    }
+    setIsAdmin(false);
     if (activePage === 'admin' || activePage === 'my-orders') {
       setActivePage('home');
     }
@@ -247,25 +268,6 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#FFF8EC] text-[#2A1810] flex flex-col font-sans selection:bg-[#9B1C2F] selection:text-white">
       
-      {/* Resilient Connection Status Warning Banner */}
-      {isSyncDegraded && (
-        <div className="bg-[#FFF3CD] border-b border-[#FFEEBA] text-[#856404] px-4 py-2.5 text-xs font-semibold flex items-center justify-between shadow-2xs z-50">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-[#856404] shrink-0" />
-            <span>Having trouble loading the latest products — showing a previous version.</span>
-          </div>
-          <button
-            onClick={() => {
-              setIsSyncDegraded(false);
-              refreshStorefront();
-            }}
-            className="ml-4 px-3 py-1 rounded-sm bg-[#856404] text-white text-[11px] font-bold uppercase tracking-wider hover:bg-[#6c5103] transition-colors cursor-pointer"
-          >
-            Retry Connection
-          </button>
-        </div>
-      )}
-
       {/* Navigation */}
       <Navbar
         activePage={activePage}
@@ -283,51 +285,97 @@ export default function App() {
         {/* PAGE 1: HOME */}
         {activePage === 'home' && (
           <div className="space-y-12 sm:space-y-16 pb-16">
-            {/* Hero Slider */}
-            <HeroBanner slides={heroSlides} setActivePage={setActivePage} />
-
-            {/* Curated Categories */}
-            <CategoryTiles
-              categories={categories}
-              onSelectCategory={(catName) => {
-                setSelectedCategory(catName);
-                setActivePage('shop');
-              }}
-            />
-
-            {/* Featured Collection Section */}
-            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-              <div className="flex items-center justify-between mb-8 border-b border-[#EFE1C8] pb-4">
-                <div>
-                  <h2 className="font-serif text-2xl sm:text-3xl font-bold text-[#2A1810]">
-                    Featured Adornments
-                  </h2>
-                  <p className="text-xs uppercase tracking-widest text-[#9B1C2F] mt-1 font-semibold">
-                    Handpicked Masterpieces for the Discerning Bride
-                  </p>
+            
+            {/* Catalog Loading Error Notice */}
+            {catalogError ? (
+              <div className="max-w-xl mx-auto my-12 p-8 bg-white border-2 border-[#D4A017] rounded-sm text-center shadow-lg">
+                <div className="w-12 h-12 rounded-full bg-red-100 text-red-700 flex items-center justify-center mx-auto mb-3">
+                  <AlertCircle className="w-6 h-6" />
                 </div>
+                <h3 className="font-serif text-lg font-bold text-[#2A1810]">Couldn't load the collection. Please refresh.</h3>
+                <p className="text-xs text-[#7A6A5C] mt-1 mb-6">We were unable to reach the store server. Please try again.</p>
                 <button
-                  onClick={() => setActivePage('shop')}
-                  className="text-xs font-bold uppercase tracking-wider text-[#9B1C2F] hover:text-[#D4A017] transition-colors border-b-2 border-transparent hover:border-[#D4A017] pb-0.5 cursor-pointer"
+                  onClick={loadCatalog}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-sm bg-[#9B1C2F] text-white font-bold text-xs uppercase tracking-wider border border-[#D4A017] hover:bg-[#7D1626] transition-colors cursor-pointer"
                 >
-                  View All &rarr;
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Retry</span>
                 </button>
               </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-                {products
-                  .filter((p) => p.featured)
-                  .slice(0, 8)
-                  .map((product) => (
-                    <ProductCard
-                      key={product.id}
-                      product={product}
-                      onSelect={(p) => setSelectedProduct(p)}
-                      onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
-                    />
-                  ))}
+            ) : loadingCatalog && products.length === 0 ? (
+              <div className="min-h-[50vh] flex flex-col items-center justify-center py-24">
+                <div className="w-10 h-10 border-3 border-[#D4A017] border-t-transparent rounded-full animate-spin mb-4" />
+                <p className="text-xs uppercase tracking-widest font-bold text-[#9B1C2F]">Loading Collection...</p>
               </div>
-            </section>
+            ) : (
+              <>
+                {/* Hero Slider */}
+                {heroSlides.length > 0 && <HeroBanner slides={heroSlides} setActivePage={setActivePage} />}
+
+                {/* Curated Categories */}
+                {categories.length > 0 && (
+                  <CategoryTiles
+                    categories={categories}
+                    onSelectCategory={(catName) => {
+                      setSelectedCategory(catName);
+                      setActivePage('shop');
+                    }}
+                  />
+                )}
+
+                {/* Featured Collection Section */}
+                <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                  <div className="flex items-center justify-between mb-8 border-b border-[#EFE1C8] pb-4">
+                    <div>
+                      <h2 className="font-serif text-2xl sm:text-3xl font-bold text-[#2A1810]">
+                        Featured Adornments
+                      </h2>
+                      <p className="text-xs uppercase tracking-widest text-[#9B1C2F] mt-1 font-semibold">
+                        Handpicked Masterpieces for the Discerning Bride
+                      </p>
+                    </div>
+                    {products.length > 0 && (
+                      <button
+                        onClick={() => setActivePage('shop')}
+                        className="text-xs font-bold uppercase tracking-wider text-[#9B1C2F] hover:text-[#D4A017] transition-colors border-b-2 border-transparent hover:border-[#D4A017] pb-0.5 cursor-pointer"
+                      >
+                        View All &rarr;
+                      </button>
+                    )}
+                  </div>
+
+                  {products.length > 0 ? (
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+                      {products
+                        .filter((p) => p.featured)
+                        .slice(0, 8)
+                        .map((product) => (
+                          <ProductCard
+                            key={product.id}
+                            product={product}
+                            onSelect={(p) => setSelectedProduct(p)}
+                            onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
+                          />
+                        ))}
+                    </div>
+                  ) : (
+                    <div className="py-16 text-center bg-white border border-[#EFE1C8] rounded-sm p-8">
+                      <Sparkles className="w-8 h-8 text-[#D4A017] mx-auto mb-3" />
+                      <h3 className="font-serif text-lg font-bold text-[#2A1810]">Collection Coming Soon</h3>
+                      <p className="text-xs text-[#7A6A5C] mt-1 max-w-md mx-auto">
+                        New handcrafted jewellery pieces are being prepared. In the meantime, you can place a custom order inquiry.
+                      </p>
+                      <button
+                        onClick={() => setActivePage('custom-orders')}
+                        className="mt-5 px-6 py-2.5 rounded-sm bg-[#9B1C2F] text-white font-bold text-xs uppercase tracking-wider border border-[#D4A017] hover:bg-[#7D1626] transition-colors cursor-pointer"
+                      >
+                        Custom Orders
+                      </button>
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
           </div>
         )}
 
@@ -392,9 +440,10 @@ export default function App() {
           {activePage === 'admin' && (
             <AdminPanel
               userEmail={userEmail}
+              isAdmin={isAdmin}
               onOpenAuth={() => setAuthModalOpen(true)}
               setActivePage={setActivePage}
-              onRefreshStorefront={refreshStorefront}
+              onRefreshStorefront={loadCatalog}
             />
           )}
 
@@ -431,9 +480,11 @@ export default function App() {
       <AuthModal
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
-        onSuccess={(email, uid) => {
+        onSuccess={async (email, uid) => {
           setUserEmail(email);
           if (uid) setUserId(uid);
+          const isAdm = await checkIsAdmin();
+          setIsAdmin(isAdm);
         }}
       />
 

@@ -1,17 +1,4 @@
-import {
-  collection,
-  doc,
-  getDocs,
-  getDoc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  onSnapshot,
-  query,
-  where,
-} from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import {
   Product,
   Category,
@@ -22,949 +9,505 @@ import {
   OrderStatus,
   PaymentStatus,
   InquiryStatus,
+  PaymentMethod,
 } from '../types';
-import {
-  INITIAL_CATEGORIES,
-  INITIAL_HERO_SLIDES,
-  INITIAL_PRODUCTS,
-  INITIAL_PAYMENT_SETTINGS,
-} from '../data/initialData';
 
-// Sync Connection Status Notifier
-type SyncStatusListener = (isDegraded: boolean) => void;
-const syncStatusListeners = new Set<SyncStatusListener>();
+// ============================================================================
+// IMAGE COMPRESSION & SUPABASE STORAGE HELPERS
+// ============================================================================
 
-export function subscribeSyncStatus(listener: SyncStatusListener): () => void {
-  syncStatusListeners.add(listener);
-  return () => syncStatusListeners.delete(listener);
-}
-
-function notifySyncStatus(isDegraded: boolean) {
-  syncStatusListeners.forEach((listener) => {
-    try {
-      listener(isDegraded);
-    } catch {
-      // ignore
+/**
+ * Compresses an image file in the browser before upload.
+ * Capped to max 1200px dimension and JPEG quality 0.8.
+ */
+async function compressImageToBlob(file: File, maxDim = 1200, quality = 0.8): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) {
+      return resolve(file);
     }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return reject(new Error('Canvas rendering context not available for compression'));
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Image compression to JPEG failed'));
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.onerror = () => reject(new Error('Failed to decode image file'));
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
   });
 }
 
 /**
- * Storage Upload Helper
- * Primary path: Firebase Storage with realistic 20-second timeout.
- * Resilient fallback: When cloud storage is unavailable or offline, compress to a small
- * thumbnail (< 20KB) so documents never approach Firestore's 1MB limit.
+ * Uploads media to Supabase Storage:
+ * - Admin uploads (products, categories, slides, UPI QR) -> public bucket 'product-images' (returns public URL)
+ * - Customer uploads (payment screenshots, inquiry reference photos) -> private bucket 'customer-uploads' (returns storage path)
+ * Never stores base64/data URLs in the database.
  */
 export async function uploadMediaFile(file: File, folderName: string): Promise<string> {
-  const readThumbnailAsDataUrl = (inputFile: File): Promise<string> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const result = event.target?.result as string;
-        if (!result) return resolve('');
+  const isCustomerUpload = folderName === 'payment_screenshots' || folderName === 'custom_inquiries';
+  const bucketName = isCustomerUpload ? 'customer-uploads' : 'product-images';
 
-        // DEGRADED / OFFLINE FALLBACK:
-        // When cloud storage is unreachable, cap resolution and compress heavily to guarantee
-        // ultra-compact size (< 20KB) and preserve Firestore document integrity.
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
+  const compressedBlob = await compressImageToBlob(file, 1200, 0.8);
+  const cleanBase = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const filePath = `${folderName}/${Date.now()}_${cleanBase}.jpg`;
 
-          const maxDim = 400; // Thumbnail-capped dimension
-          const quality = 0.55;
+  const { data, error } = await supabase.storage.from(bucketName).upload(filePath, compressedBlob, {
+    contentType: 'image/jpeg',
+    upsert: true,
+  });
 
-          if (width > maxDim || height > maxDim) {
-            if (width > height) {
-              height = Math.round((height * maxDim) / width);
-              width = maxDim;
-            } else {
-              width = Math.round((width * maxDim) / height);
-              height = maxDim;
-            }
-          }
+  if (error) {
+    console.error(`Supabase storage upload error in bucket "${bucketName}":`, error);
+    throw new Error(`Upload failed: ${error.message}`);
+  }
 
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, width, height);
-            resolve(canvas.toDataURL('image/jpeg', quality));
-          } else {
-            resolve(result);
-          }
-        };
-        img.onerror = () => resolve(result);
-        img.src = result;
-      };
-      reader.onerror = () => resolve('');
-      reader.readAsDataURL(inputFile);
-    });
+  if (isCustomerUpload) {
+    // Return relative path for private customer uploads
+    return data.path;
+  }
+
+  // Return public URL for admin catalog assets
+  const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(data.path);
+  return urlData.publicUrl;
+}
+
+/**
+ * Creates a signed URL for private customer uploads (1 hour validity)
+ */
+export async function getCustomerSignedUrl(pathOrUrl: string): Promise<string> {
+  if (!pathOrUrl) return '';
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+    return pathOrUrl;
+  }
+  try {
+    const { data, error } = await supabase.storage.from('customer-uploads').createSignedUrl(pathOrUrl, 3600);
+    if (error) {
+      console.warn('Error creating signed URL for customer upload:', pathOrUrl, error);
+      return '';
+    }
+    return data?.signedUrl || '';
+  } catch (err) {
+    console.warn('getCustomerSignedUrl error:', err);
+    return '';
+  }
+}
+
+// ============================================================================
+// DATA MAPPING LAYER: snake_case DB columns <-> camelCase App objects
+// ============================================================================
+
+export function mapRowToProduct(row: any): Product {
+  return {
+    id: String(row.id),
+    name: row.name || '',
+    category: row.category || '',
+    price: Number(row.price || 0),
+    mrp: Number(row.mrp || row.price || 0),
+    occasion: row.occasion || '',
+    description: row.description || '',
+    stock: Number(row.stock || 0),
+    featured: Boolean(row.featured),
+    images: Array.isArray(row.images) ? row.images : row.images ? [row.images] : [],
+    createdAt: row.created_at ? Number(row.created_at) : undefined,
   };
+}
 
-  // Primary Path: Firebase Cloud Storage with realistic 20-second timeout
-  const storageTask = (async () => {
-    const filename = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-    const storageRef = ref(storage, `${folderName}/${filename}`);
-    const snapshot = await uploadBytes(storageRef, file);
-    return await getDownloadURL(snapshot.ref);
-  })();
-
-  const timeoutTask = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Firebase Storage upload timeout (20s)')), 20000);
-  });
-
-  try {
-    const downloadUrl = await Promise.race([storageTask, timeoutTask]);
-    if (downloadUrl) return downloadUrl;
-  } catch (error) {
-    console.warn('Firebase Storage upload unavailable, falling back to thumbnail data URL:', error);
+export function mapProductToRow(product: Omit<Product, 'id'> & { id?: string }): any {
+  const row: any = {
+    name: product.name,
+    category: product.category,
+    price: product.price,
+    mrp: product.mrp,
+    occasion: product.occasion,
+    description: product.description || '',
+    stock: product.stock,
+    featured: Boolean(product.featured),
+    images: product.images || [],
+    created_at: product.createdAt || Date.now(),
+  };
+  if (product.id) {
+    row.id = product.id;
   }
-
-  return await readThumbnailAsDataUrl(file);
+  return row;
 }
 
-// Local Storage Fallback Keys
-const LOCAL_ORDERS_KEY = 'ash_jewellery_local_orders';
-const LOCAL_INQUIRIES_KEY = 'ash_jewellery_local_inquiries';
-const LOCAL_PRODUCTS_KEY = 'ash_jewellery_local_products';
-const LOCAL_CATEGORIES_KEY = 'ash_jewellery_local_categories';
-const LOCAL_HERO_SLIDES_KEY = 'ash_jewellery_local_hero_slides';
-const LOCAL_PAYMENT_SETTINGS_KEY = 'ash_jewellery_local_payment_settings';
+export function mapRowToCategory(row: any): Category {
+  return {
+    id: String(row.id),
+    name: row.name || '',
+    image: row.image || '',
+  };
+}
 
-const DELETED_PRODUCTS_KEY = 'ash_jewellery_deleted_products';
-const DELETED_CATEGORIES_KEY = 'ash_jewellery_deleted_categories';
-const DELETED_HERO_SLIDES_KEY = 'ash_jewellery_deleted_hero_slides';
-
-function safeGetLocalStorage(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
+export function mapCategoryToRow(cat: { id?: string; name: string; image?: string }): any {
+  const row: any = {
+    name: cat.name.trim(),
+    image: cat.image || '',
+    created_at: Date.now(),
+  };
+  if (cat.id) {
+    row.id = cat.id;
   }
+  return row;
 }
 
-function safeSetLocalStorage(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch (e) {
-    console.warn('Failed to set localStorage key:', key, e);
+export function mapRowToHeroSlide(row: any): HeroSlide {
+  return {
+    id: String(row.id),
+    headline: row.title || '',
+    subheadline: row.subtitle || '',
+    image: row.image || '',
+    buttonText: row.cta_text || 'Shop Now',
+    buttonLink: row.cta_link || 'shop',
+    order: Number(row.sort_order || 1),
+  };
+}
+
+export function mapHeroSlideToRow(slide: Omit<HeroSlide, 'id'> & { id?: string }): any {
+  const row: any = {
+    title: slide.headline,
+    subtitle: slide.subheadline || '',
+    image: slide.image,
+    cta_text: slide.buttonText || 'Shop Collection',
+    cta_link: slide.buttonLink || 'shop',
+    sort_order: slide.order || 1,
+    data: {},
+    created_at: Date.now(),
+  };
+  if (slide.id) {
+    row.id = slide.id;
   }
+  return row;
 }
 
-function getDeletedIds(key: string): Set<string> {
-  const raw = safeGetLocalStorage(key);
-  if (!raw) return new Set();
-  try {
-    const arr = JSON.parse(raw);
-    return new Set(Array.isArray(arr) ? arr : []);
-  } catch {
-    return new Set();
-  }
+export function mapRowToPaymentSettings(row: any): PaymentSettings {
+  return {
+    upiId: row?.upi_id || '',
+    upiQrCodeUrl: row?.qr_code_url || '',
+    updatedAt: row?.updated_at ? Number(row.updated_at) : Date.now(),
+  };
 }
 
-function addDeletedId(key: string, id: string): void {
-  const set = getDeletedIds(key);
-  set.add(id);
-  safeSetLocalStorage(key, JSON.stringify(Array.from(set)));
+export function mapPaymentSettingsToRow(settings: PaymentSettings): any {
+  return {
+    id: 'default',
+    upi_id: settings.upiId || '',
+    qr_code_url: settings.upiQrCodeUrl || '',
+    data: {},
+    updated_at: Date.now(),
+  };
 }
 
-function removeDeletedId(key: string, id: string): void {
-  const set = getDeletedIds(key);
-  set.delete(id);
-  safeSetLocalStorage(key, JSON.stringify(Array.from(set)));
+export function mapRowToOrder(row: any): Order {
+  const customer = row.customer || {};
+  return {
+    id: String(row.id),
+    userId: row.user_id || customer.userId || '',
+    userEmail: customer.userEmail || '',
+    customerName: customer.customerName || '',
+    customerPhone: customer.customerPhone || '',
+    address: customer.address || '',
+    city: customer.city || '',
+    pincode: customer.pincode || '',
+    items: row.items || [],
+    subtotal: Number(customer.subtotal || row.total || 0),
+    shippingFee: Number(customer.shippingFee || 0),
+    totalAmount: Number(row.total || 0),
+    paymentMethod: (customer.paymentMethod as PaymentMethod) || 'COD',
+    paymentScreenshotUrl: row.payment_screenshot_url || '',
+    paymentStatus: (row.payment_status as PaymentStatus) || 'Pending Verification',
+    orderStatus: (row.order_status as OrderStatus) || 'New',
+    createdAt: Number(row.created_at || Date.now()),
+  };
 }
 
-export function getLocalProducts(): Product[] | null {
-  const raw = safeGetLocalStorage(LOCAL_PRODUCTS_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+export function mapOrderToRow(order: Omit<Order, 'id' | 'createdAt'> & { id?: string; createdAt?: number }): any {
+  const isValidUuid = (str?: string) =>
+    Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str));
+
+  return {
+    ...(order.id ? { id: order.id } : {}),
+    user_id: isValidUuid(order.userId) ? order.userId : null,
+    customer: {
+      userId: order.userId,
+      userEmail: order.userEmail,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      address: order.address,
+      city: order.city,
+      pincode: order.pincode,
+      subtotal: order.subtotal,
+      shippingFee: order.shippingFee,
+      paymentMethod: order.paymentMethod,
+    },
+    items: order.items,
+    total: order.totalAmount,
+    payment_screenshot_url: order.paymentScreenshotUrl || null,
+    order_status: order.orderStatus,
+    payment_status: order.paymentStatus,
+    data: {},
+    created_at: order.createdAt || Date.now(),
+  };
 }
 
-export function saveLocalProducts(products: Product[]): void {
-  safeSetLocalStorage(LOCAL_PRODUCTS_KEY, JSON.stringify(products));
+export function mapRowToCustomInquiry(row: any): CustomInquiry {
+  const details = row.details || {};
+  return {
+    id: String(row.id),
+    name: details.name || '',
+    phone: details.phone || '',
+    occasion: details.occasion || '',
+    budget: details.budget || '',
+    details: details.details || '',
+    referenceImageUrl: row.reference_image_url || '',
+    referenceImages: Array.isArray(row.reference_images)
+      ? row.reference_images
+      : row.reference_image_url
+      ? [row.reference_image_url]
+      : [],
+    status: (row.status as InquiryStatus) || 'New',
+    createdAt: Number(row.created_at || Date.now()),
+  };
 }
 
-export function getLocalCategories(): Category[] | null {
-  const raw = safeGetLocalStorage(LOCAL_CATEGORIES_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+export function mapCustomInquiryToRow(
+  inquiry: Omit<CustomInquiry, 'id' | 'createdAt' | 'status'> & { id?: string; createdAt?: number; status?: InquiryStatus }
+): any {
+  return {
+    ...(inquiry.id ? { id: inquiry.id } : {}),
+    user_id: null,
+    details: {
+      name: inquiry.name,
+      phone: inquiry.phone,
+      occasion: inquiry.occasion,
+      budget: inquiry.budget,
+      details: inquiry.details,
+    },
+    reference_image_url: inquiry.referenceImageUrl || null,
+    reference_images: inquiry.referenceImages || [],
+    status: inquiry.status || 'New',
+    created_at: inquiry.createdAt || Date.now(),
+  };
 }
 
-export function saveLocalCategories(categories: Category[]): void {
-  safeSetLocalStorage(LOCAL_CATEGORIES_KEY, JSON.stringify(categories));
-}
+// ============================================================================
+// DATABASE CRUD OPERATIONS (SUPABASE)
+// ============================================================================
 
-export function getLocalHeroSlides(): HeroSlide[] | null {
-  const raw = safeGetLocalStorage(LOCAL_HERO_SLIDES_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-export function saveLocalHeroSlides(slides: HeroSlide[]): void {
-  safeSetLocalStorage(LOCAL_HERO_SLIDES_KEY, JSON.stringify(slides));
-}
-
-export function getLocalOrders(): Order[] {
-  const raw = safeGetLocalStorage(LOCAL_ORDERS_KEY);
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
-}
-
-export function saveLocalOrder(order: Order): void {
-  const current = getLocalOrders();
-  const filtered = current.filter((o) => o.id !== order.id);
-  safeSetLocalStorage(LOCAL_ORDERS_KEY, JSON.stringify([order, ...filtered]));
-}
-
-export function getLocalInquiries(): CustomInquiry[] {
-  const raw = safeGetLocalStorage(LOCAL_INQUIRIES_KEY);
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
-}
-
-export function saveLocalInquiry(inquiry: CustomInquiry): void {
-  const current = getLocalInquiries();
-  const filtered = current.filter((i) => i.id !== inquiry.id);
-  safeSetLocalStorage(LOCAL_INQUIRIES_KEY, JSON.stringify([inquiry, ...filtered]));
-}
-
-// Instant cache helpers for zero-flash initial render
-export function getInstantInitialProducts(): Product[] {
-  const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
-  const local = getLocalProducts();
-  if (local && local.length > 0) {
-    return local.filter((p) => !deletedIds.has(p.id));
-  }
-  return INITIAL_PRODUCTS.filter((p) => !deletedIds.has(p.id));
-}
-
-export function getInstantInitialCategories(): Category[] {
-  const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
-  const local = getLocalCategories();
-  if (local && local.length > 0) {
-    return local.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-  }
-  return INITIAL_CATEGORIES.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-}
-
-export function getInstantInitialHeroSlides(): HeroSlide[] {
-  const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
-  const local = getLocalHeroSlides();
-  if (local && local.length > 0) {
-    return local.filter((s) => !deletedIds.has(s.id));
-  }
-  return INITIAL_HERO_SLIDES.filter((s) => !deletedIds.has(s.id));
-}
-
-export function getInstantInitialPaymentSettings(): PaymentSettings {
-  const raw = safeGetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY);
-  if (raw) {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return INITIAL_PAYMENT_SETTINGS;
-    }
-  }
-  return INITIAL_PAYMENT_SETTINGS;
-}
-
-// Data Sanitization
-function cleanFirestoreData(data: Record<string, any>): Record<string, any> {
-  const cleaned: Record<string, any> = {};
-  Object.keys(data).forEach((key) => {
-    if (data[key] !== undefined) {
-      cleaned[key] = data[key];
-    }
-  });
-  return cleaned;
-}
-
-// ==================== PRODUCTS ====================
-
+// --- Products ---
 export async function fetchProducts(): Promise<Product[]> {
-  const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
-  const localProds = getLocalProducts();
-  try {
-    const querySnapshot = await getDocs(collection(db, 'products'));
-    let prods: Product[];
-    if (querySnapshot.empty) {
-      prods = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
-    } else {
-      prods = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Product));
-    }
-    const filtered = prods.filter((p) => !deletedIds.has(p.id));
-    if (filtered.length > 0) {
-      saveLocalProducts(filtered);
-    }
-    notifySyncStatus(false);
-    return filtered;
-  } catch (error) {
-    console.warn('Firestore fetchProducts unavailable, using fallback:', error);
-    notifySyncStatus(true);
-    const fallback = localProds && localProds.length > 0 ? localProds : INITIAL_PRODUCTS;
-    return fallback.filter((p) => !deletedIds.has(p.id));
+  const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+  if (error) {
+    console.error('fetchProducts error:', error);
+    throw error;
   }
-}
-
-export function subscribeProducts(callback: (products: Product[]) => void): () => void {
-  let unsub: (() => void) | null = null;
-  let retryCount = 0;
-  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-  let isCancelled = false;
-
-  const startListening = () => {
-    if (isCancelled) return;
-    try {
-      const deletedIds = getDeletedIds(DELETED_PRODUCTS_KEY);
-      unsub = onSnapshot(
-        collection(db, 'products'),
-        (snapshot) => {
-          retryCount = 0;
-          notifySyncStatus(false);
-          const prods = snapshot.docs
-            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Product))
-            .filter((p) => !deletedIds.has(p.id));
-          if (prods.length > 0) {
-            saveLocalProducts(prods);
-            callback(prods);
-          } else if (snapshot.empty) {
-            const local = getLocalProducts();
-            callback(local && local.length > 0 ? local : INITIAL_PRODUCTS);
-          }
-        },
-        async (error) => {
-          console.warn('Realtime products subscription error:', error);
-          // 1. One-time fetch attempt as recovery path
-          try {
-            const recoveryDocs = await fetchProducts();
-            if (recoveryDocs && recoveryDocs.length > 0) {
-              callback(recoveryDocs);
-              notifySyncStatus(false);
-            }
-          } catch {
-            notifySyncStatus(true);
-          }
-
-          // 2. Exponential backoff retry for subscription
-          if (retryCount < 3 && !isCancelled) {
-            retryCount++;
-            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
-            console.info(`Retrying products subscription (attempt ${retryCount}) in ${delay}ms...`);
-            retryTimeout = setTimeout(() => {
-              if (unsub) unsub();
-              startListening();
-            }, delay);
-          } else {
-            notifySyncStatus(true);
-          }
-        }
-      );
-    } catch (err) {
-      console.warn('Failed to attach realtime products subscription:', err);
-      notifySyncStatus(true);
-    }
-  };
-
-  startListening();
-
-  return () => {
-    isCancelled = true;
-    if (retryTimeout) clearTimeout(retryTimeout);
-    if (unsub) unsub();
-  };
+  return (data || []).map(mapRowToProduct);
 }
 
 export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }): Promise<Product> {
-  let savedProduct: Product;
+  const row = mapProductToRow(product);
   if (product.id) {
-    savedProduct = product as Product;
-    removeDeletedId(DELETED_PRODUCTS_KEY, product.id);
-    const docRef = doc(db, 'products', product.id);
-    try {
-      await setDoc(docRef, cleanFirestoreData(savedProduct), { merge: true });
-    } catch (err: any) {
-      console.error('Firestore saveProduct update error:', err);
-      throw new Error(err?.message || 'Failed to update product in database');
-    }
+    const { data, error } = await supabase.from('products').update(row).eq('id', product.id).select().single();
+    if (error) throw new Error(error.message);
+    return mapRowToProduct(data);
   } else {
-    const newDocRef = doc(collection(db, 'products'));
-    savedProduct = {
-      ...product,
-      id: newDocRef.id,
-      createdAt: Date.now(),
-    };
-    try {
-      await setDoc(newDocRef, cleanFirestoreData(savedProduct));
-    } catch (err: any) {
-      console.error('Firestore saveProduct create error:', err);
-      throw new Error(err?.message || 'Failed to create product in database');
-    }
+    const { data, error } = await supabase.from('products').insert(row).select().single();
+    if (error) throw new Error(error.message);
+    return mapRowToProduct(data);
   }
-
-  const current = getLocalProducts() || INITIAL_PRODUCTS;
-  const updated = [savedProduct, ...current.filter((p) => p.id !== savedProduct.id)];
-  saveLocalProducts(updated);
-
-  return savedProduct;
 }
 
 export async function removeProduct(id: string): Promise<void> {
-  addDeletedId(DELETED_PRODUCTS_KEY, id);
-
-  const current = getLocalProducts() || INITIAL_PRODUCTS;
-  const updated = current.filter((p) => p.id !== id);
-  saveLocalProducts(updated);
-
-  try {
-    await deleteDoc(doc(db, 'products', id));
-  } catch (err: any) {
-    console.error('Firestore removeProduct error:', err);
-    throw new Error(err?.message || 'Failed to delete product from database');
-  }
+  const { error } = await supabase.from('products').delete().eq('id', id);
+  if (error) throw new Error(error.message);
 }
 
-// ==================== CATEGORIES ====================
-
+// --- Categories ---
 export async function fetchCategories(): Promise<Category[]> {
-  const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
-  const localCats = getLocalCategories();
-  try {
-    const querySnapshot = await getDocs(collection(db, 'categories'));
-    let cats: Category[];
-    if (querySnapshot.empty) {
-      cats = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
-    } else {
-      cats = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Category));
-    }
-    const filtered = cats.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-    if (filtered.length > 0) {
-      saveLocalCategories(filtered);
-    }
-    notifySyncStatus(false);
-    return filtered;
-  } catch (error) {
-    console.warn('Error fetching categories, returning fallback:', error);
-    notifySyncStatus(true);
-    const fallback = localCats && localCats.length > 0 ? localCats : INITIAL_CATEGORIES;
-    return fallback.filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
+  const { data, error } = await supabase.from('categories').select('*').order('name', { ascending: true });
+  if (error) {
+    console.error('fetchCategories error:', error);
+    throw error;
   }
-}
-
-export function subscribeCategories(callback: (categories: Category[]) => void): () => void {
-  let unsub: (() => void) | null = null;
-  let retryCount = 0;
-  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-  let isCancelled = false;
-
-  const startListening = () => {
-    if (isCancelled) return;
-    try {
-      const deletedIds = getDeletedIds(DELETED_CATEGORIES_KEY);
-      unsub = onSnapshot(
-        collection(db, 'categories'),
-        (snapshot) => {
-          retryCount = 0;
-          notifySyncStatus(false);
-          const cats = snapshot.docs
-            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Category))
-            .filter((c) => !deletedIds.has(c.id) && !deletedIds.has(c.name.toLowerCase()));
-          if (cats.length > 0) {
-            saveLocalCategories(cats);
-            callback(cats);
-          } else if (snapshot.empty) {
-            const local = getLocalCategories();
-            callback(local && local.length > 0 ? local : INITIAL_CATEGORIES);
-          }
-        },
-        async (error) => {
-          console.warn('Realtime categories subscription error:', error);
-          try {
-            const recoveryDocs = await fetchCategories();
-            if (recoveryDocs && recoveryDocs.length > 0) {
-              callback(recoveryDocs);
-              notifySyncStatus(false);
-            }
-          } catch {
-            notifySyncStatus(true);
-          }
-
-          if (retryCount < 3 && !isCancelled) {
-            retryCount++;
-            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
-            retryTimeout = setTimeout(() => {
-              if (unsub) unsub();
-              startListening();
-            }, delay);
-          } else {
-            notifySyncStatus(true);
-          }
-        }
-      );
-    } catch (err) {
-      console.warn('Failed to attach realtime categories subscription:', err);
-      notifySyncStatus(true);
-    }
-  };
-
-  startListening();
-
-  return () => {
-    isCancelled = true;
-    if (retryTimeout) clearTimeout(retryTimeout);
-    if (unsub) unsub();
-  };
+  return (data || []).map(mapRowToCategory);
 }
 
 export async function saveCategory(category: { id?: string; name: string; image?: string }): Promise<Category> {
-  const catId = category.id || doc(collection(db, 'categories')).id;
-  const newCat: Category = {
-    id: catId,
-    name: category.name.trim(),
-    image: category.image || 'https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?auto=format&fit=crop&q=80&w=800',
-  };
-  removeDeletedId(DELETED_CATEGORIES_KEY, newCat.id);
-  removeDeletedId(DELETED_CATEGORIES_KEY, newCat.name.toLowerCase());
-
-  try {
-    await setDoc(doc(db, 'categories', newCat.id), cleanFirestoreData(newCat), { merge: true });
-  } catch (err: any) {
-    console.error('Firestore saveCategory error:', err);
-    throw new Error(err?.message || 'Failed to save category to database');
-  }
-
-  const current = getLocalCategories() || INITIAL_CATEGORIES;
-  const updated = [...current.filter((c) => c.id !== newCat.id && c.name.toLowerCase() !== newCat.name.toLowerCase()), newCat];
-  saveLocalCategories(updated);
-
-  return newCat;
-}
-
-export async function removeCategory(id: string, name?: string): Promise<void> {
-  addDeletedId(DELETED_CATEGORIES_KEY, id);
-  if (name) {
-    addDeletedId(DELETED_CATEGORIES_KEY, name.toLowerCase());
-  }
-
-  const current = getLocalCategories() || INITIAL_CATEGORIES;
-  const updated = current.filter((c) => c.id !== id && (!name || c.name.toLowerCase() !== name.toLowerCase()));
-  saveLocalCategories(updated);
-
-  try {
-    await deleteDoc(doc(db, 'categories', id));
-  } catch (err: any) {
-    console.error('Firestore removeCategory error:', err);
-    throw new Error(err?.message || 'Failed to delete category from database');
+  const row = mapCategoryToRow(category);
+  if (category.id) {
+    const { data, error } = await supabase.from('categories').update(row).eq('id', category.id).select().single();
+    if (error) throw new Error(error.message);
+    return mapRowToCategory(data);
+  } else {
+    const { data, error } = await supabase.from('categories').insert(row).select().single();
+    if (error) throw new Error(error.message);
+    return mapRowToCategory(data);
   }
 }
 
-// ==================== HERO SLIDES ====================
+export async function removeCategory(id: string, _name?: string): Promise<void> {
+  const { error } = await supabase.from('categories').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
 
+// --- Hero Slides ---
 export async function fetchHeroSlides(): Promise<HeroSlide[]> {
-  const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
-  const localSlides = getLocalHeroSlides();
-  try {
-    const querySnapshot = await getDocs(collection(db, 'heroSlides'));
-    let slides: HeroSlide[];
-    if (querySnapshot.empty) {
-      slides = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
-    } else {
-      slides = querySnapshot.docs
-        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as HeroSlide))
-        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    }
-    const filtered = slides.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    if (filtered.length > 0) {
-      saveLocalHeroSlides(filtered);
-    }
-    notifySyncStatus(false);
-    return filtered;
-  } catch (error) {
-    console.warn('Error fetching hero slides, returning local or initial:', error);
-    notifySyncStatus(true);
-    const fallback = localSlides && localSlides.length > 0 ? localSlides : INITIAL_HERO_SLIDES;
-    return fallback.filter((s) => !deletedIds.has(s.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const { data, error } = await supabase.from('hero_slides').select('*').order('sort_order', { ascending: true });
+  if (error) {
+    console.error('fetchHeroSlides error:', error);
+    throw error;
   }
-}
-
-export function subscribeHeroSlides(callback: (slides: HeroSlide[]) => void): () => void {
-  let unsub: (() => void) | null = null;
-  let retryCount = 0;
-  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-  let isCancelled = false;
-
-  const startListening = () => {
-    if (isCancelled) return;
-    try {
-      const deletedIds = getDeletedIds(DELETED_HERO_SLIDES_KEY);
-      unsub = onSnapshot(
-        collection(db, 'heroSlides'),
-        (snapshot) => {
-          retryCount = 0;
-          notifySyncStatus(false);
-          const slides = snapshot.docs
-            .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as HeroSlide))
-            .filter((s) => !deletedIds.has(s.id))
-            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-          if (slides.length > 0) {
-            saveLocalHeroSlides(slides);
-            callback(slides);
-          } else if (snapshot.empty) {
-            const local = getLocalHeroSlides();
-            callback(local && local.length > 0 ? local : INITIAL_HERO_SLIDES);
-          }
-        },
-        async (error) => {
-          console.warn('Realtime hero slides subscription error:', error);
-          try {
-            const recoveryDocs = await fetchHeroSlides();
-            if (recoveryDocs && recoveryDocs.length > 0) {
-              callback(recoveryDocs);
-              notifySyncStatus(false);
-            }
-          } catch {
-            notifySyncStatus(true);
-          }
-
-          if (retryCount < 3 && !isCancelled) {
-            retryCount++;
-            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
-            retryTimeout = setTimeout(() => {
-              if (unsub) unsub();
-              startListening();
-            }, delay);
-          } else {
-            notifySyncStatus(true);
-          }
-        }
-      );
-    } catch (err) {
-      console.warn('Failed to attach realtime hero slides subscription:', err);
-      notifySyncStatus(true);
-    }
-  };
-
-  startListening();
-
-  return () => {
-    isCancelled = true;
-    if (retryTimeout) clearTimeout(retryTimeout);
-    if (unsub) unsub();
-  };
+  return (data || []).map(mapRowToHeroSlide);
 }
 
 export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string }): Promise<HeroSlide> {
-  let savedSlide: HeroSlide;
+  const row = mapHeroSlideToRow(slide);
   if (slide.id) {
-    savedSlide = slide as HeroSlide;
-    removeDeletedId(DELETED_HERO_SLIDES_KEY, slide.id);
-    const docRef = doc(db, 'heroSlides', slide.id);
-    try {
-      await setDoc(docRef, cleanFirestoreData(slide), { merge: true });
-    } catch (err: any) {
-      console.error('Firestore saveHeroSlide error:', err);
-      throw new Error(err?.message || 'Failed to update hero slide');
-    }
+    const { data, error } = await supabase.from('hero_slides').update(row).eq('id', slide.id).select().single();
+    if (error) throw new Error(error.message);
+    return mapRowToHeroSlide(data);
   } else {
-    const newDocRef = doc(collection(db, 'heroSlides'));
-    savedSlide = {
-      ...slide,
-      id: newDocRef.id,
-    };
-    try {
-      await setDoc(newDocRef, cleanFirestoreData(savedSlide));
-    } catch (err: any) {
-      console.error('Firestore saveHeroSlide error:', err);
-      throw new Error(err?.message || 'Failed to create hero slide');
-    }
+    const { data, error } = await supabase.from('hero_slides').insert(row).select().single();
+    if (error) throw new Error(error.message);
+    return mapRowToHeroSlide(data);
   }
-
-  const current = getLocalHeroSlides() || INITIAL_HERO_SLIDES;
-  const updated = current.filter((s) => s.id !== savedSlide.id);
-  updated.push(savedSlide);
-  const sorted = updated.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  saveLocalHeroSlides(sorted);
-
-  return savedSlide;
 }
 
 export async function removeHeroSlide(id: string): Promise<void> {
-  addDeletedId(DELETED_HERO_SLIDES_KEY, id);
-
-  const current = getLocalHeroSlides() || INITIAL_HERO_SLIDES;
-  const updated = current.filter((s) => s.id !== id);
-  saveLocalHeroSlides(updated);
-
-  try {
-    await deleteDoc(doc(db, 'heroSlides', id));
-  } catch (err: any) {
-    console.error('Firestore removeHeroSlide error:', err);
-    throw new Error(err?.message || 'Failed to delete hero slide');
-  }
+  const { error } = await supabase.from('hero_slides').delete().eq('id', id);
+  if (error) throw new Error(error.message);
 }
 
-// ==================== ORDERS ====================
-
-export async function createOrder(orderData: Omit<Order, 'id' | 'createdAt'>): Promise<Order> {
-  const newDocRef = doc(collection(db, 'orders'));
-  const newOrder: Order = {
-    ...orderData,
-    paymentScreenshotUrl: orderData.paymentScreenshotUrl || '',
-    id: newDocRef.id,
-    createdAt: Date.now(),
-  };
-
-  // Keep local backup for resilience
-  saveLocalOrder(newOrder);
-
-  try {
-    await setDoc(newDocRef, cleanFirestoreData(newOrder));
-  } catch (err: any) {
-    console.error('Firestore createOrder setDoc failed:', err);
-    throw new Error(err?.message || 'Failed to place order in database. Please try again.');
-  }
-
-  return newOrder;
-}
-
-export async function fetchAllOrders(): Promise<Order[]> {
-  try {
-    const querySnapshot = await getDocs(collection(db, 'orders'));
-    const fsOrders = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Order));
-    // Firestore is single source of truth
-    return fsOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  } catch (error) {
-    console.warn('Error fetching all orders from Firestore, using local fallback:', error);
-    const localOrders = getLocalOrders();
-    return localOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }
-}
-
-export async function fetchCustomerOrders(userEmail: string): Promise<Order[]> {
-  try {
-    const q = query(collection(db, 'orders'), where('userEmail', '==', userEmail));
-    const querySnapshot = await getDocs(q);
-    const fsOrders = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Order));
-    // Firestore is single source of truth
-    return fsOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  } catch (error) {
-    console.warn('Error fetching customer orders, using local fallback:', error);
-    const localOrders = getLocalOrders().filter((o) => o.userEmail === userEmail);
-    return localOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }
-}
-
-export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
-  const localOrders = getLocalOrders();
-  const order = localOrders.find((o) => o.id === orderId);
-  if (order) {
-    order.orderStatus = status;
-    saveLocalOrder(order);
-  }
-
-  try {
-    const docRef = doc(db, 'orders', orderId);
-    await updateDoc(docRef, { orderStatus: status });
-  } catch (err: any) {
-    console.error('Firestore updateOrderStatus failed:', err);
-    throw new Error(err?.message || 'Failed to update order status');
-  }
-}
-
-export async function updatePaymentVerification(orderId: string, status: PaymentStatus): Promise<void> {
-  const localOrders = getLocalOrders();
-  const order = localOrders.find((o) => o.id === orderId);
-  if (order) {
-    order.paymentStatus = status;
-    saveLocalOrder(order);
-  }
-
-  try {
-    const docRef = doc(db, 'orders', orderId);
-    await updateDoc(docRef, { paymentStatus: status });
-  } catch (err: any) {
-    console.error('Firestore updatePaymentVerification failed:', err);
-    throw new Error(err?.message || 'Failed to update payment status');
-  }
-}
-
-// ==================== CUSTOM INQUIRIES ====================
-
-export async function createCustomInquiry(
-  inquiryData: Omit<CustomInquiry, 'id' | 'createdAt' | 'status'>
-): Promise<CustomInquiry> {
-  const newDocRef = doc(collection(db, 'customInquiries'));
-  const firstImage =
-    inquiryData.referenceImageUrl || (inquiryData.referenceImages && inquiryData.referenceImages[0]) || '';
-  const imagesList =
-    inquiryData.referenceImages && inquiryData.referenceImages.length > 0
-      ? inquiryData.referenceImages
-      : firstImage
-      ? [firstImage]
-      : [];
-
-  const newInquiry: CustomInquiry = {
-    ...inquiryData,
-    referenceImageUrl: firstImage,
-    referenceImages: imagesList,
-    id: newDocRef.id,
-    status: 'New',
-    createdAt: Date.now(),
-  };
-
-  saveLocalInquiry(newInquiry);
-
-  try {
-    await setDoc(newDocRef, cleanFirestoreData(newInquiry));
-  } catch (err: any) {
-    console.error('Firestore createCustomInquiry setDoc failed:', err);
-    throw new Error(err?.message || 'Failed to submit custom inquiry');
-  }
-
-  return newInquiry;
-}
-
-export async function fetchCustomInquiries(): Promise<CustomInquiry[]> {
-  try {
-    const querySnapshot = await getDocs(collection(db, 'customInquiries'));
-    const fsInquiries = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as CustomInquiry));
-    return fsInquiries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  } catch (error) {
-    console.warn('Error fetching custom inquiries from Firestore, using local fallback:', error);
-    const localInquiries = getLocalInquiries();
-    return localInquiries.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }
-}
-
-export async function updateInquiryStatus(inquiryId: string, status: InquiryStatus): Promise<void> {
-  const localInquiries = getLocalInquiries();
-  const inq = localInquiries.find((i) => i.id === inquiryId);
-  if (inq) {
-    inq.status = status;
-    saveLocalInquiry(inq);
-  }
-
-  try {
-    const docRef = doc(db, 'customInquiries', inquiryId);
-    await updateDoc(docRef, { status });
-  } catch (err: any) {
-    console.error('Firestore updateInquiryStatus failed:', err);
-    throw new Error(err?.message || 'Failed to update inquiry status');
-  }
-}
-
-// ==================== PAYMENT SETTINGS ====================
-
+// --- Payment Settings ---
 export async function fetchPaymentSettings(): Promise<PaymentSettings> {
-  try {
-    const docSnap = await getDoc(doc(db, 'paymentSettings', 'default'));
-    if (docSnap.exists()) {
-      const data = docSnap.data() as PaymentSettings;
-      safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
-      notifySyncStatus(false);
-      return data;
-    }
-    return getInstantInitialPaymentSettings();
-  } catch (error) {
-    console.warn('Error fetching payment settings, using local or initial:', error);
-    notifySyncStatus(true);
-    return getInstantInitialPaymentSettings();
+  const { data, error } = await supabase.from('payment_settings').select('*').eq('id', 'default').maybeSingle();
+  if (error) {
+    console.error('fetchPaymentSettings error:', error);
+    throw error;
   }
-}
-
-export function subscribePaymentSettings(callback: (settings: PaymentSettings) => void): () => void {
-  let unsub: (() => void) | null = null;
-  let retryCount = 0;
-  let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-  let isCancelled = false;
-
-  const startListening = () => {
-    if (isCancelled) return;
-    try {
-      unsub = onSnapshot(
-        doc(db, 'paymentSettings', 'default'),
-        (snapshot) => {
-          retryCount = 0;
-          notifySyncStatus(false);
-          if (snapshot.exists()) {
-            const data = snapshot.data() as PaymentSettings;
-            safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(data));
-            callback(data);
-          }
-        },
-        async (error) => {
-          console.warn('Realtime payment settings subscription notice:', error);
-          try {
-            const recoverySettings = await fetchPaymentSettings();
-            if (recoverySettings) {
-              callback(recoverySettings);
-              notifySyncStatus(false);
-            }
-          } catch {
-            notifySyncStatus(true);
-          }
-
-          if (retryCount < 3 && !isCancelled) {
-            retryCount++;
-            const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 10000);
-            retryTimeout = setTimeout(() => {
-              if (unsub) unsub();
-              startListening();
-            }, delay);
-          } else {
-            notifySyncStatus(true);
-          }
-        }
-      );
-    } catch (err) {
-      console.warn('Failed to attach realtime payment settings subscription:', err);
-      notifySyncStatus(true);
-    }
-  };
-
-  startListening();
-
-  return () => {
-    isCancelled = true;
-    if (retryTimeout) clearTimeout(retryTimeout);
-    if (unsub) unsub();
-  };
+  if (!data) {
+    return {
+      upiId: '',
+      upiQrCodeUrl: '',
+      updatedAt: Date.now(),
+    };
+  }
+  return mapRowToPaymentSettings(data);
 }
 
 export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
-  safeSetLocalStorage(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
-  try {
-    await setDoc(doc(db, 'paymentSettings', 'default'), cleanFirestoreData({
-      ...settings,
-      updatedAt: Date.now(),
-    }));
-  } catch (err: any) {
-    console.error('Firestore savePaymentSettings failed:', err);
-    throw new Error(err?.message || 'Failed to save payment settings to database');
-  }
+  const row = mapPaymentSettingsToRow(settings);
+  const { error } = await supabase.from('payment_settings').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error(error.message);
 }
 
-export async function seedDatabaseIfEmpty(): Promise<void> {
-  // Safe helper if manual seeding is needed
+// --- Orders ---
+export async function createOrder(orderData: Omit<Order, 'id' | 'createdAt'>): Promise<Order> {
+  const id = 'ORD-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+  const row = mapOrderToRow({ ...orderData, id, createdAt: Date.now() });
+  const { data, error } = await supabase.from('orders').insert(row).select().single();
+  if (error) throw new Error(error.message || 'Failed to submit order');
+  return mapRowToOrder(data);
+}
+
+export async function fetchAllOrders(): Promise<Order[]> {
+  const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+  if (error) throw new Error(error.message || 'Failed to fetch orders');
+  return (data || []).map(mapRowToOrder);
+}
+
+export async function fetchCustomerOrders(userEmail: string): Promise<Order[]> {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .filter('customer->>userEmail', 'eq', userEmail)
+    .order('created_at', { ascending: false });
+
+  if (error) throw new Error(error.message || 'Failed to fetch customer orders');
+  return (data || []).map(mapRowToOrder);
+}
+
+export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
+  const { error } = await supabase.from('orders').update({ order_status: status }).eq('id', orderId);
+  if (error) throw new Error(error.message || 'Failed to update order status');
+}
+
+export async function updatePaymentVerification(orderId: string, status: PaymentStatus): Promise<void> {
+  const { error } = await supabase.from('orders').update({ payment_status: status }).eq('id', orderId);
+  if (error) throw new Error(error.message || 'Failed to update payment status');
+}
+
+// --- Custom Inquiries ---
+export async function createCustomInquiry(
+  inquiryData: Omit<CustomInquiry, 'id' | 'createdAt' | 'status'>
+): Promise<CustomInquiry> {
+  const id = 'INQ-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+  const row = mapCustomInquiryToRow({ ...inquiryData, id, createdAt: Date.now(), status: 'New' });
+  const { data, error } = await supabase.from('custom_inquiries').insert(row).select().single();
+  if (error) throw new Error(error.message || 'Failed to submit custom inquiry');
+  return mapRowToCustomInquiry(data);
+}
+
+export async function fetchCustomInquiries(): Promise<CustomInquiry[]> {
+  const { data, error } = await supabase.from('custom_inquiries').select('*').order('created_at', { ascending: false });
+  if (error) throw new Error(error.message || 'Failed to fetch inquiries');
+  return (data || []).map(mapRowToCustomInquiry);
+}
+
+export async function updateInquiryStatus(inquiryId: string, status: InquiryStatus): Promise<void> {
+  const { error } = await supabase.from('custom_inquiries').update({ status }).eq('id', inquiryId);
+  if (error) throw new Error(error.message || 'Failed to update inquiry status');
+}
+
+// ============================================================================
+// AUTH & ADMIN AUTHORIZATION
+// ============================================================================
+
+/**
+ * Checks whether the current user is an admin by calling the database function supabase.rpc('is_admin').
+ * Does not query any admins table directly.
+ */
+export async function checkIsAdmin(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc('is_admin');
+    if (error) {
+      console.warn('is_admin RPC returned error:', error);
+      return false;
+    }
+    return Boolean(data);
+  } catch (err) {
+    console.warn('checkIsAdmin error:', err);
+    return false;
+  }
 }
