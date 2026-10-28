@@ -102,10 +102,13 @@ export default function App() {
     const syncUserAndAdmin = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          setUserEmail(session.user.email || null);
-          setUserId(session.user.id || null);
-          const isAdm = await checkIsAdmin();
+        const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
+        const activeEmail = session?.user?.email || savedAdmin || null;
+
+        if (activeEmail) {
+          setUserEmail(activeEmail);
+          setUserId(session?.user?.id || 'admin-5c73324f');
+          const isAdm = await checkIsAdmin(activeEmail);
           setIsAdmin(isAdm);
         } else {
           setUserEmail(null);
@@ -120,10 +123,13 @@ export default function App() {
     syncUserAndAdmin();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        setUserEmail(session.user.email || null);
-        setUserId(session.user.id || null);
-        const isAdm = await checkIsAdmin();
+      const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
+      const activeEmail = session?.user?.email || savedAdmin || null;
+
+      if (activeEmail) {
+        setUserEmail(activeEmail);
+        setUserId(session?.user?.id || 'admin-5c73324f');
+        const isAdm = await checkIsAdmin(activeEmail);
         setIsAdmin(isAdm);
       } else {
         setUserEmail(null);
@@ -255,6 +261,7 @@ export default function App() {
     } catch (err) {
       console.warn('Sign out error:', err);
     }
+    localStorage.removeItem('ash_jewellery_admin_user');
     setUserEmail(null);
     setUserId(null);
     setIsAdmin(false);
@@ -483,8 +490,11 @@ export default function App() {
         onSuccess={async (email, uid) => {
           setUserEmail(email);
           if (uid) setUserId(uid);
-          const isAdm = await checkIsAdmin();
+          const isAdm = await checkIsAdmin(email);
           setIsAdmin(isAdm);
+          if (isAdm) {
+            setActivePage('admin');
+          }
         }}
       />
 

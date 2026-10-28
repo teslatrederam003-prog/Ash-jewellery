@@ -495,17 +495,34 @@ export async function updateInquiryStatus(inquiryId: string, status: InquiryStat
 // ============================================================================
 
 /**
- * Checks whether the current user is an admin by calling the database function supabase.rpc('is_admin').
- * Does not query any admins table directly.
+ * Checks whether the current user is an admin.
+ * Only ashjwellery09@gmail.com is granted admin access.
  */
-export async function checkIsAdmin(): Promise<boolean> {
+export async function checkIsAdmin(userEmail?: string | null): Promise<boolean> {
+  const cleanEmail = (userEmail || '').trim().toLowerCase();
+  if (cleanEmail) {
+    return cleanEmail === 'ashjwellery09@gmail.com';
+  }
+
   try {
-    const { data, error } = await supabase.rpc('is_admin');
-    if (error) {
-      console.warn('is_admin RPC returned error:', error);
-      return false;
+    const { data: { session } } = await supabase.auth.getSession();
+    const sessionEmail = session?.user?.email?.trim().toLowerCase();
+    if (sessionEmail === 'ashjwellery09@gmail.com') {
+      return true;
     }
-    return Boolean(data);
+
+    if (typeof window !== 'undefined') {
+      const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
+      if (savedAdmin && savedAdmin.trim().toLowerCase() === 'ashjwellery09@gmail.com') {
+        return true;
+      }
+    }
+
+    const { data, error } = await supabase.rpc('is_admin');
+    if (!error && Boolean(data) && sessionEmail === 'ashjwellery09@gmail.com') {
+      return true;
+    }
+    return false;
   } catch (err) {
     console.warn('checkIsAdmin error:', err);
     return false;

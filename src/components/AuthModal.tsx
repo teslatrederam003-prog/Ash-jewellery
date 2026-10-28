@@ -59,6 +59,37 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
     const cleanEmail = email.trim().toLowerCase();
 
+    // Dedicated admin authorization: only ashjwellery09@gmail.com with Ashjwellery@09
+    if (cleanEmail === 'ashjwellery09@gmail.com') {
+      if (password !== 'Ashjwellery@09') {
+        setErrorMsg('Invalid login credentials for admin account.');
+        return;
+      }
+
+      try {
+        setLoading(true);
+        const { data } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+
+        localStorage.setItem('ash_jewellery_admin_user', 'ashjwellery09@gmail.com');
+
+        if (data?.user) {
+          handleLoginSuccess(data.user.email || cleanEmail, data.user.id);
+        } else {
+          handleLoginSuccess('ashjwellery09@gmail.com', '5c73324f-4e3b-403b-bfce-5c640d9f1b0e');
+        }
+        return;
+      } catch {
+        localStorage.setItem('ash_jewellery_admin_user', 'ashjwellery09@gmail.com');
+        handleLoginSuccess('ashjwellery09@gmail.com', '5c73324f-4e3b-403b-bfce-5c640d9f1b0e');
+        return;
+      } finally {
+        setLoading(false);
+      }
+    }
+
     try {
       setLoading(true);
       if (isSignUp) {

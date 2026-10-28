@@ -169,8 +169,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTimeout(() => setFeedback(null), 3000);
   };
 
-  // Check login & admin authorization
-  if (!userEmail || !isAdmin) {
+  // Check login & admin authorization - ONLY ashjwellery09@gmail.com is given admin access
+  const isAuthorizedAdmin = Boolean(
+    isAdmin && userEmail && userEmail.trim().toLowerCase() === 'ashjwellery09@gmail.com'
+  );
+
+  if (!userEmail || !isAuthorizedAdmin) {
     return (
       <div className="py-16 bg-[#FFF8EC] min-h-[70vh] flex items-center justify-center px-4">
         <div className="bg-white border-2 border-[#D4A017] rounded-sm p-8 max-w-md w-full text-center shadow-lg">
@@ -180,15 +184,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <h2 className="font-serif text-2xl font-bold text-[#2A1810]">Admin Portal Access</h2>
           <p className="text-xs font-medium text-[#7A6A5C] mt-2">
             {!userEmail
-              ? 'Please sign in with your administrator account to access store management.'
-              : 'Access Restricted. Only authorized administrators can access this portal.'}
+              ? 'Please sign in with the administrator account (ashjwellery09@gmail.com) to access store management.'
+              : 'Access Restricted. Only the authorized administrator account (ashjwellery09@gmail.com) can access this portal.'}
           </p>
           {!userEmail && (
             <button
               onClick={onOpenAuth}
               className="mt-6 w-full py-3 rounded-sm bg-[#9B1C2F] hover:bg-[#7A1522] text-white font-bold text-xs uppercase tracking-wider border-b-2 border-[#D4A017] cursor-pointer shadow-md"
             >
-              Sign In
+              Sign In as Admin
             </button>
           )}
         </div>
