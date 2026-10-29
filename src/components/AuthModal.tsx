@@ -58,11 +58,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
 
     const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
 
-    // Dedicated admin authorization: only ashjwellery09@gmail.com with Ashjwellery@09
-    if (cleanEmail === 'ashjwellery09@gmail.com') {
-      if (password !== 'Ashjwellery@09') {
-        setErrorMsg('Invalid login credentials for admin account.');
+    // Dedicated admin authorization: ashjewellery09@gmail.com / ashjwellery09@gmail.com
+    const isAdminEmail = cleanEmail === 'ashjewellery09@gmail.com' || cleanEmail === 'ashjwellery09@gmail.com';
+    const validAdminPasswords = ['Ashjewellery@09', 'Ashjwellery@09', 'ashjewellery@09', 'ashjwellery@09'];
+    const isValidAdminPassword = validAdminPasswords.includes(cleanPassword);
+
+    if (isAdminEmail) {
+      if (!isValidAdminPassword) {
+        setErrorMsg('Invalid login credentials');
         return;
       }
 
@@ -70,20 +75,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         setLoading(true);
         const { data } = await supabase.auth.signInWithPassword({
           email: cleanEmail,
-          password,
+          password: cleanPassword,
         });
 
-        localStorage.setItem('ash_jewellery_admin_user', 'ashjwellery09@gmail.com');
+        localStorage.setItem('ash_jewellery_admin_user', cleanEmail);
 
         if (data?.user) {
           handleLoginSuccess(data.user.email || cleanEmail, data.user.id);
         } else {
-          handleLoginSuccess('ashjwellery09@gmail.com', '5c73324f-4e3b-403b-bfce-5c640d9f1b0e');
+          handleLoginSuccess(cleanEmail, 'admin-ash-09');
         }
         return;
       } catch {
-        localStorage.setItem('ash_jewellery_admin_user', 'ashjwellery09@gmail.com');
-        handleLoginSuccess('ashjwellery09@gmail.com', '5c73324f-4e3b-403b-bfce-5c640d9f1b0e');
+        localStorage.setItem('ash_jewellery_admin_user', cleanEmail);
+        handleLoginSuccess(cleanEmail, 'admin-ash-09');
         return;
       } finally {
         setLoading(false);

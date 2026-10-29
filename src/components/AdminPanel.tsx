@@ -169,10 +169,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTimeout(() => setFeedback(null), 3000);
   };
 
-  // Check login & admin authorization - ONLY ashjwellery09@gmail.com is given admin access
-  const isAuthorizedAdmin = Boolean(
-    isAdmin && userEmail && userEmail.trim().toLowerCase() === 'ashjwellery09@gmail.com'
-  );
+  // Check login & admin authorization - ONLY ashjewellery09@gmail.com / ashjwellery09@gmail.com is given admin access
+  const isAuthorizedEmail =
+    userEmail &&
+    (userEmail.trim().toLowerCase() === 'ashjewellery09@gmail.com' ||
+      userEmail.trim().toLowerCase() === 'ashjwellery09@gmail.com');
+  const isAuthorizedAdmin = Boolean(isAdmin && isAuthorizedEmail);
 
   if (!userEmail || !isAuthorizedAdmin) {
     return (
@@ -184,8 +186,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <h2 className="font-serif text-2xl font-bold text-[#2A1810]">Admin Portal Access</h2>
           <p className="text-xs font-medium text-[#7A6A5C] mt-2">
             {!userEmail
-              ? 'Please sign in with the administrator account (ashjwellery09@gmail.com) to access store management.'
-              : 'Access Restricted. Only the authorized administrator account (ashjwellery09@gmail.com) can access this portal.'}
+              ? 'Please sign in with the administrator account (ashjewellery09@gmail.com) to access store management.'
+              : 'Access Restricted. Only the authorized administrator account can access this portal.'}
           </p>
           {!userEmail && (
             <button

@@ -496,30 +496,33 @@ export async function updateInquiryStatus(inquiryId: string, status: InquiryStat
 
 /**
  * Checks whether the current user is an admin.
- * Only ashjwellery09@gmail.com is granted admin access.
+ * Only ashjewellery09@gmail.com / ashjwellery09@gmail.com is granted admin access.
  */
 export async function checkIsAdmin(userEmail?: string | null): Promise<boolean> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
+  const isAdminEmail = (email: string) =>
+    email === 'ashjewellery09@gmail.com' || email === 'ashjwellery09@gmail.com';
+
   if (cleanEmail) {
-    return cleanEmail === 'ashjwellery09@gmail.com';
+    return isAdminEmail(cleanEmail);
   }
 
   try {
     const { data: { session } } = await supabase.auth.getSession();
     const sessionEmail = session?.user?.email?.trim().toLowerCase();
-    if (sessionEmail === 'ashjwellery09@gmail.com') {
+    if (sessionEmail && isAdminEmail(sessionEmail)) {
       return true;
     }
 
     if (typeof window !== 'undefined') {
       const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
-      if (savedAdmin && savedAdmin.trim().toLowerCase() === 'ashjwellery09@gmail.com') {
+      if (savedAdmin && isAdminEmail(savedAdmin.trim().toLowerCase())) {
         return true;
       }
     }
 
     const { data, error } = await supabase.rpc('is_admin');
-    if (!error && Boolean(data) && sessionEmail === 'ashjwellery09@gmail.com') {
+    if (!error && Boolean(data) && sessionEmail && isAdminEmail(sessionEmail)) {
       return true;
     }
     return false;
