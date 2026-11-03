@@ -154,7 +154,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setPaymentSettings(paySet);
     } catch (err: any) {
       console.error('Error loading admin data:', err);
-      setFeedback({ type: 'error', message: 'Failed to fetch admin data from Firestore.' });
+      setFeedback({ type: 'error', message: 'Failed to fetch admin data from store service.' });
     } finally {
       setLoading(false);
     }
@@ -169,14 +169,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTimeout(() => setFeedback(null), 3000);
   };
 
-  // Check login & admin authorization - ONLY ashjewellery09@gmail.com / ashjwellery09@gmail.com is given admin access
-  const isAuthorizedEmail =
-    userEmail &&
-    (userEmail.trim().toLowerCase() === 'ashjewellery09@gmail.com' ||
-      userEmail.trim().toLowerCase() === 'ashjwellery09@gmail.com');
-  const isAuthorizedAdmin = Boolean(isAdmin && isAuthorizedEmail);
-
-  if (!userEmail || !isAuthorizedAdmin) {
+  // Check login & admin authorization
+  if (!userEmail || !isAdmin) {
     return (
       <div className="py-16 bg-[#FFF8EC] min-h-[70vh] flex items-center justify-center px-4">
         <div className="bg-white border-2 border-[#D4A017] rounded-sm p-8 max-w-md w-full text-center shadow-lg">
@@ -186,8 +180,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <h2 className="font-serif text-2xl font-bold text-[#2A1810]">Admin Portal Access</h2>
           <p className="text-xs font-medium text-[#7A6A5C] mt-2">
             {!userEmail
-              ? 'Please sign in with the administrator account (ashjewellery09@gmail.com) to access store management.'
-              : 'Access Restricted. Only the authorized administrator account can access this portal.'}
+              ? 'Please sign in with the administrator account to access store management.'
+              : 'Access Restricted. Only authorized administrators can access this portal.'}
           </p>
           {!userEmail && (
             <button

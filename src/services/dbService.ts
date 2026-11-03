@@ -325,14 +325,32 @@ export function mapCustomInquiryToRow(
 // DATABASE CRUD OPERATIONS (SUPABASE)
 // ============================================================================
 
+/**
+ * Timeout wrapper for database requests to avoid hanging for 30+ seconds.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 8000, errorMsg = 'Database request timed out'): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
+    ),
+  ]);
+}
+
 // --- Products ---
 export async function fetchProducts(): Promise<Product[]> {
-  const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
-  if (error) {
-    console.error('fetchProducts error:', error);
-    throw error;
-  }
-  return (data || []).map(mapRowToProduct);
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.error('fetchProducts error:', error);
+        throw error;
+      }
+      return (data || []).map(mapRowToProduct);
+    })(),
+    8000,
+    'Failed to load products: connection timed out'
+  );
 }
 
 export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }): Promise<Product> {
@@ -355,12 +373,18 @@ export async function removeProduct(id: string): Promise<void> {
 
 // --- Categories ---
 export async function fetchCategories(): Promise<Category[]> {
-  const { data, error } = await supabase.from('categories').select('*').order('name', { ascending: true });
-  if (error) {
-    console.error('fetchCategories error:', error);
-    throw error;
-  }
-  return (data || []).map(mapRowToCategory);
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase.from('categories').select('*').order('name', { ascending: true });
+      if (error) {
+        console.error('fetchCategories error:', error);
+        throw error;
+      }
+      return (data || []).map(mapRowToCategory);
+    })(),
+    8000,
+    'Failed to load categories: connection timed out'
+  );
 }
 
 export async function saveCategory(category: { id?: string; name: string; image?: string }): Promise<Category> {
@@ -383,12 +407,18 @@ export async function removeCategory(id: string, _name?: string): Promise<void> 
 
 // --- Hero Slides ---
 export async function fetchHeroSlides(): Promise<HeroSlide[]> {
-  const { data, error } = await supabase.from('hero_slides').select('*').order('sort_order', { ascending: true });
-  if (error) {
-    console.error('fetchHeroSlides error:', error);
-    throw error;
-  }
-  return (data || []).map(mapRowToHeroSlide);
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase.from('hero_slides').select('*').order('sort_order', { ascending: true });
+      if (error) {
+        console.error('fetchHeroSlides error:', error);
+        throw error;
+      }
+      return (data || []).map(mapRowToHeroSlide);
+    })(),
+    8000,
+    'Failed to load hero slides: connection timed out'
+  );
 }
 
 export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string }): Promise<HeroSlide> {
@@ -411,19 +441,25 @@ export async function removeHeroSlide(id: string): Promise<void> {
 
 // --- Payment Settings ---
 export async function fetchPaymentSettings(): Promise<PaymentSettings> {
-  const { data, error } = await supabase.from('payment_settings').select('*').eq('id', 'default').maybeSingle();
-  if (error) {
-    console.error('fetchPaymentSettings error:', error);
-    throw error;
-  }
-  if (!data) {
-    return {
-      upiId: '',
-      upiQrCodeUrl: '',
-      updatedAt: Date.now(),
-    };
-  }
-  return mapRowToPaymentSettings(data);
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase.from('payment_settings').select('*').eq('id', 'default').maybeSingle();
+      if (error) {
+        console.error('fetchPaymentSettings error:', error);
+        throw error;
+      }
+      if (!data) {
+        return {
+          upiId: '',
+          upiQrCodeUrl: '',
+          updatedAt: Date.now(),
+        };
+      }
+      return mapRowToPaymentSettings(data);
+    })(),
+    8000,
+    'Failed to load payment settings: connection timed out'
+  );
 }
 
 export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
@@ -442,20 +478,32 @@ export async function createOrder(orderData: Omit<Order, 'id' | 'createdAt'>): P
 }
 
 export async function fetchAllOrders(): Promise<Order[]> {
-  const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-  if (error) throw new Error(error.message || 'Failed to fetch orders');
-  return (data || []).map(mapRowToOrder);
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+      if (error) throw new Error(error.message || 'Failed to fetch orders');
+      return (data || []).map(mapRowToOrder);
+    })(),
+    8000,
+    'Failed to load orders: connection timed out'
+  );
 }
 
 export async function fetchCustomerOrders(userEmail: string): Promise<Order[]> {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .filter('customer->>userEmail', 'eq', userEmail)
-    .order('created_at', { ascending: false });
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .filter('customer->>userEmail', 'eq', userEmail)
+        .order('created_at', { ascending: false });
 
-  if (error) throw new Error(error.message || 'Failed to fetch customer orders');
-  return (data || []).map(mapRowToOrder);
+      if (error) throw new Error(error.message || 'Failed to fetch customer orders');
+      return (data || []).map(mapRowToOrder);
+    })(),
+    8000,
+    'Failed to load customer orders: connection timed out'
+  );
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
@@ -480,9 +528,15 @@ export async function createCustomInquiry(
 }
 
 export async function fetchCustomInquiries(): Promise<CustomInquiry[]> {
-  const { data, error } = await supabase.from('custom_inquiries').select('*').order('created_at', { ascending: false });
-  if (error) throw new Error(error.message || 'Failed to fetch inquiries');
-  return (data || []).map(mapRowToCustomInquiry);
+  return withTimeout(
+    (async () => {
+      const { data, error } = await supabase.from('custom_inquiries').select('*').order('created_at', { ascending: false });
+      if (error) throw new Error(error.message || 'Failed to fetch inquiries');
+      return (data || []).map(mapRowToCustomInquiry);
+    })(),
+    8000,
+    'Failed to load custom inquiries: connection timed out'
+  );
 }
 
 export async function updateInquiryStatus(inquiryId: string, status: InquiryStatus): Promise<void> {
@@ -494,37 +548,59 @@ export async function updateInquiryStatus(inquiryId: string, status: InquiryStat
 // AUTH & ADMIN AUTHORIZATION
 // ============================================================================
 
+export const ADMIN_EMAILS: string[] = [
+  'ashjewellery09@gmail.com',
+  'ashjwellery09@gmail.com',
+];
+
 /**
- * Checks whether the current user is an admin.
- * Only ashjewellery09@gmail.com / ashjwellery09@gmail.com is granted admin access.
+ * Decides admin status from the signed-in Supabase user:
+ * - Checks if user's email is in ADMIN_EMAILS list
+ * - Checks is_admin flag in a profiles table or via RPC
+ * Never decides from a typed password in the frontend.
  */
 export async function checkIsAdmin(userEmail?: string | null): Promise<boolean> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
-  const isAdminEmail = (email: string) =>
-    email === 'ashjewellery09@gmail.com' || email === 'ashjwellery09@gmail.com';
-
   if (cleanEmail) {
-    return isAdminEmail(cleanEmail);
+    return ADMIN_EMAILS.includes(cleanEmail);
   }
 
   try {
     const { data: { session } } = await supabase.auth.getSession();
     const sessionEmail = session?.user?.email?.trim().toLowerCase();
-    if (sessionEmail && isAdminEmail(sessionEmail)) {
+    if (!sessionEmail) {
+      return false; // Not signed in -> definitely false, 0 network delay
+    }
+
+    if (ADMIN_EMAILS.includes(sessionEmail)) {
       return true;
     }
 
-    if (typeof window !== 'undefined') {
-      const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
-      if (savedAdmin && isAdminEmail(savedAdmin.trim().toLowerCase())) {
+    // Check profiles table if present
+    try {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_admin')
+        .eq('id', session.user.id)
+        .maybeSingle();
+
+      if (profile && profile.is_admin) {
         return true;
       }
+    } catch {
+      // profiles table might not exist
     }
 
-    const { data, error } = await supabase.rpc('is_admin');
-    if (!error && Boolean(data) && sessionEmail && isAdminEmail(sessionEmail)) {
-      return true;
+    // Check is_admin RPC if present
+    try {
+      const { data: rpcAdmin } = await supabase.rpc('is_admin');
+      if (Boolean(rpcAdmin)) {
+        return true;
+      }
+    } catch {
+      // ignore
     }
+
     return false;
   } catch (err) {
     console.warn('checkIsAdmin error:', err);

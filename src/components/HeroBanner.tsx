@@ -16,7 +16,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({ slides, setActivePage })
       setCurrentIndex((prev) => (prev + 1) % slides.length);
     }, 5000);
     return () => clearInterval(interval);
-  }, [slides]);
+  }, [slides.length]);
 
   if (!slides || slides.length === 0) return null;
 

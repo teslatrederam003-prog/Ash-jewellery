@@ -25,6 +25,7 @@ import { HeroBanner } from './components/HeroBanner';
 import { CategoryTiles } from './components/CategoryTiles';
 import { ProductCard } from './components/ProductCard';
 import { AuthModal } from './components/AuthModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Code-split pages: loaded on-demand to drastically reduce initial JS payload
 const ShopPage = lazy(() => import('./components/ShopPage').then((m) => ({ default: m.ShopPage })));
@@ -47,7 +48,7 @@ function PageLoadingFallback() {
   );
 }
 
-export default function App() {
+function AppContent() {
   const [activePage, setActivePage] = useState<ActivePage>('home');
 
   // Auth & Admin state - evaluated dynamically via Supabase Auth & is_admin RPC
@@ -55,6 +56,9 @@ export default function App() {
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+
+  // Search state for product filtering
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Catalog Data States - initialized empty (NO hardcoded placeholder/demo data)
   const [products, setProducts] = useState<Product[]>([]);
@@ -97,48 +101,31 @@ export default function App() {
     }
   }, [cart]);
 
-  // Supabase Auth State & Admin Resolution
+  // Supabase Auth State & Admin Resolution - single listener, no racing or redundant calls
   useEffect(() => {
-    const syncUserAndAdmin = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
-        const activeEmail = session?.user?.email || savedAdmin || null;
-
-        if (activeEmail) {
-          setUserEmail(activeEmail);
-          setUserId(session?.user?.id || 'admin-5c73324f');
-          const isAdm = await checkIsAdmin(activeEmail);
-          setIsAdmin(isAdm);
-        } else {
-          setUserEmail(null);
-          setUserId(null);
-          setIsAdmin(false);
-        }
-      } catch (err) {
-        console.warn('Auth sync error:', err);
-      }
-    };
-
-    syncUserAndAdmin();
+    let isMounted = true;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const savedAdmin = localStorage.getItem('ash_jewellery_admin_user');
-      const activeEmail = session?.user?.email || savedAdmin || null;
-
-      if (activeEmail) {
-        setUserEmail(activeEmail);
-        setUserId(session?.user?.id || 'admin-5c73324f');
-        const isAdm = await checkIsAdmin(activeEmail);
-        setIsAdmin(isAdm);
+      if (!isMounted) return;
+      const user = session?.user;
+      if (user && user.email) {
+        setUserEmail(user.email);
+        setUserId(user.id);
+        const isAdm = await checkIsAdmin(user.email);
+        if (isMounted) {
+          setIsAdmin(isAdm);
+        }
       } else {
         setUserEmail(null);
         setUserId(null);
-        setIsAdmin(false);
+        if (isMounted) {
+          setIsAdmin(false);
+        }
       }
     });
 
     return () => {
+      isMounted = false;
       subscription.unsubscribe();
     };
   }, []);
@@ -167,15 +154,17 @@ export default function App() {
   };
 
   useEffect(() => {
+    let isMounted = true;
     loadCatalog();
 
-    // Subscribe to Supabase Realtime changes for catalog tables
+    // Unique channel topic per component instance to prevent duplicate channel collision & 30s hangs
+    const channelTopic = `catalog-realtime-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const channel = supabase
-      .channel('catalog-realtime')
+      .channel(channelTopic)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async () => {
         try {
           const prods = await fetchProducts();
-          setProducts(prods);
+          if (isMounted) setProducts(prods);
         } catch (e) {
           console.warn('Realtime product refresh error:', e);
         }
@@ -183,7 +172,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, async () => {
         try {
           const cats = await fetchCategories();
-          setCategories(cats);
+          if (isMounted) setCategories(cats);
         } catch (e) {
           console.warn('Realtime category refresh error:', e);
         }
@@ -191,7 +180,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hero_slides' }, async () => {
         try {
           const slides = await fetchHeroSlides();
-          setHeroSlides(slides);
+          if (isMounted) setHeroSlides(slides);
         } catch (e) {
           console.warn('Realtime slide refresh error:', e);
         }
@@ -199,7 +188,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_settings' }, async () => {
         try {
           const pay = await fetchPaymentSettings();
-          setPaymentSettings(pay);
+          if (isMounted) setPaymentSettings(pay);
         } catch (e) {
           console.warn('Realtime payment settings refresh error:', e);
         }
@@ -207,7 +196,8 @@ export default function App() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      isMounted = false;
+      supabase.removeChannel(channel).catch(() => {});
     };
   }, []);
 
@@ -283,7 +273,9 @@ export default function App() {
         userEmail={userEmail}
         isAdmin={isAdmin}
         onOpenAuth={() => setAuthModalOpen(true)}
-        onSignOut={handleSignOut}
+        onLogout={handleSignOut}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
       />
 
       {/* Main Content Areas */}
@@ -327,6 +319,7 @@ export default function App() {
                       setSelectedCategory(catName);
                       setActivePage('shop');
                     }}
+                    setActivePage={setActivePage}
                   />
                 )}
 
@@ -360,7 +353,7 @@ export default function App() {
                           <ProductCard
                             key={product.id}
                             product={product}
-                            onSelect={(p) => setSelectedProduct(p)}
+                            onSelectProduct={(p) => setSelectedProduct(p)}
                             onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
                           />
                         ))}
@@ -396,8 +389,11 @@ export default function App() {
               categories={categories}
               selectedCategory={selectedCategory}
               setSelectedCategory={setSelectedCategory}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
               onSelectProduct={(p) => setSelectedProduct(p)}
               onAddToCart={(p, e) => handleAddToCart(p, 1, e)}
+              loading={loadingCatalog}
             />
           )}
 
@@ -499,5 +495,13 @@ export default function App() {
       />
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }

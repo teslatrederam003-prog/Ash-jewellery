@@ -58,42 +58,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const cleanPassword = password.trim();
-
-    // Dedicated admin authorization: ashjewellery09@gmail.com / ashjwellery09@gmail.com
-    const isAdminEmail = cleanEmail === 'ashjewellery09@gmail.com' || cleanEmail === 'ashjwellery09@gmail.com';
-    const validAdminPasswords = ['Ashjewellery@09', 'Ashjwellery@09', 'ashjewellery@09', 'ashjwellery@09'];
-    const isValidAdminPassword = validAdminPasswords.includes(cleanPassword);
-
-    if (isAdminEmail) {
-      if (!isValidAdminPassword) {
-        setErrorMsg('Invalid login credentials');
-        return;
-      }
-
-      try {
-        setLoading(true);
-        const { data } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: cleanPassword,
-        });
-
-        localStorage.setItem('ash_jewellery_admin_user', cleanEmail);
-
-        if (data?.user) {
-          handleLoginSuccess(data.user.email || cleanEmail, data.user.id);
-        } else {
-          handleLoginSuccess(cleanEmail, 'admin-ash-09');
-        }
-        return;
-      } catch {
-        localStorage.setItem('ash_jewellery_admin_user', cleanEmail);
-        handleLoginSuccess(cleanEmail, 'admin-ash-09');
-        return;
-      } finally {
-        setLoading(false);
-      }
-    }
 
     try {
       setLoading(true);
@@ -130,7 +94,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       console.error('Supabase auth error:', err);
       let friendly = 'Authentication failed. Please check your credentials.';
 
-      if (err.message) {
+      const errLower = (err?.message || '').toLowerCase();
+      if (err?.code === 'email_not_confirmed' || errLower.includes('email not confirmed')) {
+        friendly = 'Email not confirmed. Please check your inbox for the Supabase confirmation email.';
+      } else if (err?.code === 'invalid_credentials' || errLower.includes('invalid login credentials')) {
+        friendly = 'Invalid email or password. Please verify your credentials and try again.';
+      } else if (err?.message) {
         friendly = err.message;
       }
       setErrorMsg(friendly);
