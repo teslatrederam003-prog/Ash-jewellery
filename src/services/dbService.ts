@@ -156,8 +156,8 @@ export function mapProductToRow(product: Omit<Product, 'id'> & { id?: string }):
     images: product.images || [],
     created_at: product.createdAt || Date.now(),
   };
-  if (product.id) {
-    row.id = product.id;
+  if (product.id && product.id.trim() !== '') {
+    row.id = product.id.trim();
   }
   return row;
 }
@@ -176,8 +176,8 @@ export function mapCategoryToRow(cat: { id?: string; name: string; image?: strin
     image: cat.image || '',
     created_at: Date.now(),
   };
-  if (cat.id) {
-    row.id = cat.id;
+  if (cat.id && cat.id.trim() !== '') {
+    row.id = cat.id.trim();
   }
   return row;
 }
@@ -205,8 +205,8 @@ export function mapHeroSlideToRow(slide: Omit<HeroSlide, 'id'> & { id?: string }
     data: {},
     created_at: Date.now(),
   };
-  if (slide.id) {
-    row.id = slide.id;
+  if (slide.id && slide.id.trim() !== '') {
+    row.id = slide.id.trim();
   }
   return row;
 }
@@ -355,12 +355,13 @@ export async function fetchProducts(): Promise<Product[]> {
 
 export async function saveProduct(product: Omit<Product, 'id'> & { id?: string }): Promise<Product> {
   const row = mapProductToRow(product);
-  if (product.id) {
-    const { data, error } = await supabase.from('products').update(row).eq('id', product.id).select().single();
+  if (product.id && product.id.trim() !== '') {
+    const { data, error } = await supabase.from('products').update(row).eq('id', product.id.trim()).select().single();
     if (error) throw new Error(error.message);
     return mapRowToProduct(data);
   } else {
-    const { data, error } = await supabase.from('products').insert(row).select().single();
+    delete row.id;
+    const { data, error } = await supabase.from('products').insert({ ...row, id: row.id || crypto.randomUUID() }).select().single();
     if (error) throw new Error(error.message);
     return mapRowToProduct(data);
   }
@@ -389,12 +390,13 @@ export async function fetchCategories(): Promise<Category[]> {
 
 export async function saveCategory(category: { id?: string; name: string; image?: string }): Promise<Category> {
   const row = mapCategoryToRow(category);
-  if (category.id) {
-    const { data, error } = await supabase.from('categories').update(row).eq('id', category.id).select().single();
+  if (category.id && category.id.trim() !== '') {
+    const { data, error } = await supabase.from('categories').update(row).eq('id', category.id.trim()).select().single();
     if (error) throw new Error(error.message);
     return mapRowToCategory(data);
   } else {
-    const { data, error } = await supabase.from('categories').insert(row).select().single();
+    delete row.id;
+    const { data, error } = await supabase.from('categories').insert({ ...row, id: row.id || crypto.randomUUID() }).select().single();
     if (error) throw new Error(error.message);
     return mapRowToCategory(data);
   }
@@ -423,12 +425,13 @@ export async function fetchHeroSlides(): Promise<HeroSlide[]> {
 
 export async function saveHeroSlide(slide: Omit<HeroSlide, 'id'> & { id?: string }): Promise<HeroSlide> {
   const row = mapHeroSlideToRow(slide);
-  if (slide.id) {
-    const { data, error } = await supabase.from('hero_slides').update(row).eq('id', slide.id).select().single();
+  if (slide.id && slide.id.trim() !== '') {
+    const { data, error } = await supabase.from('hero_slides').update(row).eq('id', slide.id.trim()).select().single();
     if (error) throw new Error(error.message);
     return mapRowToHeroSlide(data);
   } else {
-    const { data, error } = await supabase.from('hero_slides').insert(row).select().single();
+    delete row.id;
+    const { data, error } = await supabase.from('hero_slides').insert({ ...row, id: row.id || crypto.randomUUID() }).select().single();
     if (error) throw new Error(error.message);
     return mapRowToHeroSlide(data);
   }
@@ -472,7 +475,7 @@ export async function savePaymentSettings(settings: PaymentSettings): Promise<vo
 export async function createOrder(orderData: Omit<Order, 'id' | 'createdAt'>): Promise<Order> {
   const id = 'ORD-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
   const row = mapOrderToRow({ ...orderData, id, createdAt: Date.now() });
-  const { data, error } = await supabase.from('orders').insert(row).select().single();
+  const { data, error } = await supabase.from('orders').insert({ ...row, id: row.id || crypto.randomUUID() }).select().single();
   if (error) throw new Error(error.message || 'Failed to submit order');
   return mapRowToOrder(data);
 }
@@ -522,7 +525,7 @@ export async function createCustomInquiry(
 ): Promise<CustomInquiry> {
   const id = 'INQ-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
   const row = mapCustomInquiryToRow({ ...inquiryData, id, createdAt: Date.now(), status: 'New' });
-  const { data, error } = await supabase.from('custom_inquiries').insert(row).select().single();
+  const { data, error } = await supabase.from('custom_inquiries').insert({ ...row, id: row.id || crypto.randomUUID() }).select().single();
   if (error) throw new Error(error.message || 'Failed to submit custom inquiry');
   return mapRowToCustomInquiry(data);
 }
